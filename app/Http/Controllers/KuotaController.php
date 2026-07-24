@@ -2,8 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\SyncQuotaFromGtk;
 use App\Models\QuotaShift;
-use App\Services\Quota\QuotaService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -47,10 +47,10 @@ class KuotaController extends Controller
         ]);
     }
 
-    public function sync(QuotaService $quota): RedirectResponse
+    public function sync(): RedirectResponse
     {
-        $quota->syncFromGtk();
+        SyncQuotaFromGtk::dispatch();
 
-        return back()->with('success', 'Sinkronisasi kuota selesai.');
+        return back()->with('success', 'Sinkronisasi kuota sedang diproses di background. Data akan diperbarui dalam beberapa saat.');
     }
 }
