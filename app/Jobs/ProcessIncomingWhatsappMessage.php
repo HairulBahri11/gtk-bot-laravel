@@ -189,6 +189,12 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
         foreach ($extracted as $key => $value) {
             if ($value !== null && $value !== '' && ! in_array($key, ['konfirmasi', 'intent'], true)) {
+                // Sekali disetujui, jangan biarkan giliran berikutnya
+                // membalikkannya ke false - lihat catatan di handleStateOne().
+                if ($key === 'poli_disetujui' && ($context['poli_disetujui'] ?? false) === true) {
+                    continue;
+                }
+
                 $context[$key] = $value;
             }
         }
@@ -214,10 +220,34 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
     protected function handleStateOne(ChatSession $session, array $result, GtkApiService $gtk): string
     {
         $context = $session->context;
+
+        // no_hp bisa juga terisi dari jawaban bebas user (bukan cuma auto-fill
+        // dari chat_id yang sudah pasti valid) - validasi ulang di sini sebagai
+        // nomor seluler Indonesia yang sah. Kalau tidak valid, kosongkan lagi
+        // supaya field ini dianggap belum terisi & AI menanyakannya ulang.
+        if (filled($context['no_hp'] ?? null)) {
+            $normalizedNoHp = IndonesianPhoneNumber::normalize((string) $context['no_hp']);
+
+            if ($normalizedNoHp === null) {
+                unset($context['no_hp']);
+            } else {
+                $context['no_hp'] = $normalizedNoHp;
+            }
+
+            $session->context = $context;
+        }
+
         $required = ['nama', 'tanggal_lahir', 'nama_ibu_kandung', 'jenis_kelamin', 'no_hp', 'keluhan'];
         $complete = collect($required)->every(fn ($field) => filled($context[$field] ?? null));
 
-        if (! $complete || ! $result['ready_for_next_state']) {
+        // Jangan andalkan ready_for_next_state semata untuk syarat persetujuan
+        // poliklinik - tegakkan juga di sisi server memakai flag poli_disetujui
+        // yang tersimpan permanen di context (lihat AiEngineService::stateOnePrompt),
+        // supaya model yang lupa/keliru menandai giliran pertama sebagai "sudah
+        // setuju" tidak bisa melompati konfirmasi ini.
+        $poliDisetujui = blank($context['poli_pilihan'] ?? null) || ($context['poli_disetujui'] ?? false) === true;
+
+        if (! $complete || ! $poliDisetujui || ! $result['ready_for_next_state']) {
             return $result['reply'];
         }
 
