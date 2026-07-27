@@ -82,8 +82,12 @@ export default function MonitoringShow({ session }) {
     }, [session.messages.length]);
 
     return (
-        <PreLayananLayout header={`Monitoring: ${session.chat_id}`}>
-            <Head title={`Monitoring - ${session.chat_id}`} />
+        <PreLayananLayout
+            header={`Monitoring: ${session.nomor_wa ?? 'Nomor tidak terdeteksi'}`}
+        >
+            <Head
+                title={`Monitoring - ${session.nomor_wa ?? 'Nomor tidak terdeteksi'}`}
+            />
 
             <div className="py-12">
                 <div className="mx-auto max-w-7xl sm:px-6 lg:px-8">
@@ -149,6 +153,18 @@ export default function MonitoringShow({ session }) {
                                                 session.patient
                                                     .nama_ibu_kandung
                                             }
+                                        </dd>
+                                    </div>
+                                    <div>
+                                        <dt className="inline text-gray-500">
+                                            Nomor WA:{' '}
+                                        </dt>
+                                        <dd className="inline">
+                                            {session.patient.no_hp ?? (
+                                                <span className="text-gray-400">
+                                                    Nomor tidak terdeteksi
+                                                </span>
+                                            )}
                                         </dd>
                                     </div>
                                 </dl>

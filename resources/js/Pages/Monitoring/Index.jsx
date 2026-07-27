@@ -1,34 +1,32 @@
-import PreLayananLayout from '@/Layouts/PreLayananLayout';
-import { Head, Link, router } from '@inertiajs/react';
-import { useState } from 'react';
+import PreLayananLayout from "@/Layouts/PreLayananLayout";
+import { Head, Link, router } from "@inertiajs/react";
+import { useState } from "react";
 
 const stateLabel = {
-    STATE_1_PENGUMPULAN_DATA: 'Pengumpulan Data',
-    STATE_2_KONFIRMASI: 'Konfirmasi',
-    STATE_3_DONE: 'Selesai',
+    STATE_1_PENGUMPULAN_DATA: "Pengumpulan Data",
+    STATE_2_KONFIRMASI: "Konfirmasi",
+    STATE_3_DONE: "Selesai",
 };
 
 const statusLabel = {
-    in_progress: 'Sedang diproses',
-    waitlist: 'Waitlist',
-    booked: 'Booked',
-    confirmed: 'Confirmed',
-    arrived: 'Arrived',
-    no_show: 'No-Show',
-    cancelled: 'Dibatalkan',
-    rescheduled: 'Dijadwal ulang',
+    in_progress: "Sedang diproses",
+    waitlist: "Waitlist",
+    booked: "Booked",
+    confirmed: "Confirmed",
+    arrived: "Arrived",
+    no_show: "No-Show",
+    cancelled: "Dibatalkan",
+    rescheduled: "Dijadwal ulang",
 };
 
 export default function MonitoringIndex({ sessions, filters }) {
-    const [search, setSearch] = useState(filters.search ?? '');
+    const [search, setSearch] = useState(filters.search ?? "");
 
     function applySearch(e) {
         e.preventDefault();
-        router.get(
-            route('monitoring.index'),
-            search ? { search } : {},
-            { preserveState: true },
-        );
+        router.get(route("monitoring.index"), search ? { search } : {}, {
+            preserveState: true,
+        });
     }
 
     return (
@@ -43,7 +41,7 @@ export default function MonitoringIndex({ sessions, filters }) {
                     >
                         <div className="flex-1">
                             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                Cari nomor WA / No. RM / nama
+                                Cari No. RM / nama
                             </label>
                             <input
                                 type="text"
@@ -66,11 +64,11 @@ export default function MonitoringIndex({ sessions, filters }) {
                             <thead className="border-b border-gray-200 bg-gray-50/80 dark:border-gray-800 dark:bg-gray-800/40">
                                 <tr>
                                     {[
-                                        'Nomor WA',
-                                        'Pasien Terdaftar',
-                                        'State',
-                                        'Pesan Terakhir',
-                                        '',
+                                        "Nomor WhatsApp",
+                                        "Pasien Terdaftar",
+                                        "State",
+                                        "Pesan Terakhir",
+                                        "",
                                     ].map((h) => (
                                         <th
                                             key={h}
@@ -98,7 +96,11 @@ export default function MonitoringIndex({ sessions, filters }) {
                                         className="transition-colors hover:bg-gray-50/80 dark:hover:bg-gray-800/40"
                                     >
                                         <td className="px-4 py-3 align-top text-sm text-gray-900 dark:text-gray-100">
-                                            {s.chat_id}
+                                            {s.nomor_wa ?? (
+                                                <span className="text-gray-400">
+                                                    Nomor tidak terdeteksi
+                                                </span>
+                                            )}
                                         </td>
                                         <td className="px-4 py-3 align-top text-sm text-gray-900 dark:text-gray-100">
                                             {s.patients.length === 0 ? (
@@ -107,44 +109,37 @@ export default function MonitoringIndex({ sessions, filters }) {
                                                 </span>
                                             ) : (
                                                 <ul className="space-y-1.5">
-                                                    {s.patients.map(
-                                                        (p, i) => (
-                                                            <li key={i}>
-                                                                <span className="font-medium">
-                                                                    {p.nama ??
-                                                                        '-'}
+                                                    {s.patients.map((p, i) => (
+                                                        <li key={i}>
+                                                            <span className="font-medium">
+                                                                {p.nama ?? "-"}
+                                                            </span>
+                                                            {p.no_rm && (
+                                                                <span className="text-gray-500 dark:text-gray-400">
+                                                                    {" "}
+                                                                    (RM:{" "}
+                                                                    {p.no_rm})
                                                                 </span>
-                                                                {p.no_rm && (
-                                                                    <span className="text-gray-500 dark:text-gray-400">
-                                                                        {' '}
-                                                                        (RM:{' '}
-                                                                        {
-                                                                            p.no_rm
-                                                                        }
-                                                                        )
-                                                                    </span>
-                                                                )}
-                                                                {p.poliklinik && (
-                                                                    <span className="text-gray-500 dark:text-gray-400">
-                                                                        {' '}
-                                                                        ·{' '}
-                                                                        {
-                                                                            p.poliklinik
-                                                                        }
-                                                                    </span>
-                                                                )}
-                                                                {p.status && (
-                                                                    <span className="ml-1.5 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-                                                                        {statusLabel[
-                                                                            p
-                                                                                .status
-                                                                        ] ??
-                                                                            p.status}
-                                                                    </span>
-                                                                )}
-                                                            </li>
-                                                        ),
-                                                    )}
+                                                            )}
+                                                            {p.poliklinik && (
+                                                                <span className="text-gray-500 dark:text-gray-400">
+                                                                    {" "}
+                                                                    ·{" "}
+                                                                    {
+                                                                        p.poliklinik
+                                                                    }
+                                                                </span>
+                                                            )}
+                                                            {p.status && (
+                                                                <span className="ml-1.5 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                                                                    {statusLabel[
+                                                                        p.status
+                                                                    ] ??
+                                                                        p.status}
+                                                                </span>
+                                                            )}
+                                                        </li>
+                                                    ))}
                                                 </ul>
                                             )}
                                         </td>
@@ -152,12 +147,12 @@ export default function MonitoringIndex({ sessions, filters }) {
                                             {stateLabel[s.state] ?? s.state}
                                         </td>
                                         <td className="px-4 py-3 align-top text-sm text-gray-500 dark:text-gray-400">
-                                            {s.last_message_at ?? '-'}
+                                            {s.last_message_at ?? "-"}
                                         </td>
                                         <td className="px-4 py-3 align-top text-sm">
                                             <Link
                                                 href={route(
-                                                    'monitoring.show',
+                                                    "monitoring.show",
                                                     s.id,
                                                 )}
                                                 className="font-medium text-[#2a78d6] hover:underline dark:text-[#3987e5]"
@@ -176,12 +171,12 @@ export default function MonitoringIndex({ sessions, filters }) {
                             {sessions.links.map((link, i) => (
                                 <Link
                                     key={i}
-                                    href={link.url ?? '#'}
+                                    href={link.url ?? "#"}
                                     className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
                                         link.active
-                                            ? 'bg-[#2a78d6] text-white dark:bg-[#3987e5]'
-                                            : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:ring-gray-800 dark:hover:bg-gray-800'
-                                    } ${!link.url ? 'pointer-events-none opacity-50' : ''}`}
+                                            ? "bg-[#2a78d6] text-white dark:bg-[#3987e5]"
+                                            : "bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:ring-gray-800 dark:hover:bg-gray-800"
+                                    } ${!link.url ? "pointer-events-none opacity-50" : ""}`}
                                     dangerouslySetInnerHTML={{
                                         __html: link.label,
                                     }}

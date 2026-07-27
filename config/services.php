@@ -53,4 +53,8 @@ return [
         'base_url' => 'https://openrouter.ai/api/v1',
     ],
 
+    'admin' => [
+        'whatsapp_number' => env('ADMIN_WHATSAPP_NUMBER'),
+    ],
+
 ];
