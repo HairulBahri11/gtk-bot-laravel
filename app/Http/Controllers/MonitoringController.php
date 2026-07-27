@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\ChatSession;
+use App\Support\IndonesianPhoneNumber;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -56,6 +57,12 @@ class MonitoringController extends Controller
                 return [
                     'id' => $s->id,
                     'chat_id' => $s->chat_id,
+                    // chat_id WAHA bisa berformat "...@lid" (kontak yang
+                    // menyembunyikan nomor asli) - jangan pernah tampilkan
+                    // ID mentah itu sebagai nomor WA, tampilkan null supaya
+                    // frontend bisa render fallback yang jelas.
+                    'nomor_wa' => IndonesianPhoneNumber::normalize($s->context['no_hp'] ?? null)
+                        ?? IndonesianPhoneNumber::fromChatId($s->chat_id),
                     'state' => $s->state->value,
                     'step' => $s->step,
                     'last_message_at' => $s->last_message_at?->toDateTimeString(),
@@ -77,6 +84,8 @@ class MonitoringController extends Controller
             'session' => [
                 'id' => $chatSession->id,
                 'chat_id' => $chatSession->chat_id,
+                'nomor_wa' => IndonesianPhoneNumber::normalize($chatSession->context['no_hp'] ?? null)
+                    ?? IndonesianPhoneNumber::fromChatId($chatSession->chat_id),
                 'state' => $chatSession->state->value,
                 'context' => $chatSession->context,
                 // tanggal_lahir di-cast 'date' - jangan kirim model mentah,
@@ -88,7 +97,7 @@ class MonitoringController extends Controller
                     'jk' => $chatSession->patient->jk,
                     'tanggal_lahir' => $chatSession->patient->tanggal_lahir?->toDateString(),
                     'nama_ibu_kandung' => $chatSession->patient->nama_ibu_kandung,
-                    'no_hp' => $chatSession->patient->no_hp,
+                    'no_hp' => IndonesianPhoneNumber::normalize($chatSession->patient->no_hp),
                 ] : null,
                 // Satu nomor WA bisa dipakai daftarin lebih dari satu anak -
                 // setiap baris riwayat WAJIB bawa identitas pasiennya sendiri

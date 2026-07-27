@@ -1,41 +1,35 @@
-import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
-import StatCard from '@/Components/StatCard';
-import ShiftMeter from '@/Components/ShiftMeter';
-import WeeklyTrendChart from '@/Components/WeeklyTrendChart';
-import { Head, Link } from '@inertiajs/react';
+import AuthenticatedLayout from "@/Layouts/AuthenticatedLayout";
+import StatCard from "@/Components/StatCard";
+import ShiftMeter from "@/Components/ShiftMeter";
+import WeeklyTrendChart from "@/Components/WeeklyTrendChart";
+import { Head, Link } from "@inertiajs/react";
 
-const shiftLabel = { pagi: 'Pagi', sore: 'Sore', malam: 'Malam' };
+const shiftLabel = { pagi: "Pagi", sore: "Sore", malam: "Malam" };
 
 function noShowColor(rate) {
-    if (rate >= 25) return 'critical';
-    if (rate >= 10) return 'warning';
+    if (rate >= 25) return "critical";
+    if (rate >= 10) return "warning";
 
-    return 'good';
+    return "good";
 }
 
 function kuotaColor(sisa) {
-    if (sisa <= 0) return 'critical';
-    if (sisa < 5) return 'warning';
+    if (sisa <= 0) return "critical";
+    if (sisa < 5) return "warning";
 
-    return 'good';
+    return "good";
 }
 
 export default function Dashboard({ stats, shiftToday, weeklyTrend }) {
-    const today = new Date().toLocaleDateString('id-ID', {
-        weekday: 'long',
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric',
+    const today = new Date().toLocaleDateString("id-ID", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        year: "numeric",
     });
 
     return (
-        <AuthenticatedLayout
-            header={
-                <h2 className="text-xl font-semibold leading-tight text-gray-800 dark:text-gray-200">
-                    Overview
-                </h2>
-            }
-        >
+        <AuthenticatedLayout>
             <Head title="Overview" />
 
             <div className="py-12">
@@ -102,7 +96,9 @@ export default function Dashboard({ stats, shiftToday, weeklyTrend }) {
                                     {shiftToday.map((s) => (
                                         <ShiftMeter
                                             key={s.shift}
-                                            label={shiftLabel[s.shift] ?? s.shift}
+                                            label={
+                                                shiftLabel[s.shift] ?? s.shift
+                                            }
                                             used={s.used}
                                             total={s.total}
                                         />
@@ -110,7 +106,7 @@ export default function Dashboard({ stats, shiftToday, weeklyTrend }) {
                                 </div>
                             )}
                             <Link
-                                href={route('kuota.index')}
+                                href={route("kuota.index")}
                                 className="mt-4 inline-block text-sm text-[#2a78d6] hover:underline dark:text-[#3987e5]"
                             >
                                 Lihat detail kuota &rarr;
@@ -123,8 +119,8 @@ export default function Dashboard({ stats, shiftToday, weeklyTrend }) {
                             Navigasi Cepat
                         </h3>
                         <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-                            Buka tab <strong>Pre-Layanan</strong> untuk
-                            memantau kuota shift dokter, mengelola
+                            Buka tab <strong>Pre-Layanan</strong> untuk memantau
+                            kuota shift dokter, mengelola
                             booking/waitlist/No-Show, dan melihat status
                             percakapan WhatsApp & rekam medis pasien.
                         </p>

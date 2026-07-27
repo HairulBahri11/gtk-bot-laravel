@@ -16,6 +16,7 @@ use App\Services\Antrean\AntreanService;
 use App\Services\Gtk\GtkApiException;
 use App\Services\Gtk\GtkApiService;
 use App\Services\Whatsapp\WhatsAppServiceInterface;
+use App\Support\IndonesianPhoneNumber;
 use Carbon\Carbon;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -58,12 +59,12 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         );
         $session->last_message_at = now();
 
+        $this->autoFillPhoneFromChatId($session);
+
         try {
             $result = $ai->interpret($session, $this->text);
         } catch (AiEngineException $e) {
-            Log::error('AI Engine gagal memproses pesan', ['chat_id' => $this->chatId, 'error' => $e->getMessage()]);
-            $session->save();
-            $this->reply($wa, 'Maaf, sistem sedang mengalami gangguan. Silakan coba beberapa saat lagi.');
+            $this->handleSystemError($wa, $session, 'AI Engine', $e->getMessage());
 
             return;
         }
@@ -71,14 +72,74 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         $this->resetIfDifferentPatient($session, $result['extracted']);
         $this->mergeContext($session, $result['extracted']);
 
-        $reply = match ($session->state) {
-            ChatState::PengumpulanData => $this->handleStateOne($session, $result, $gtk),
-            ChatState::Konfirmasi => $this->handleStateTwo($session, $result, $antrean),
-            ChatState::Done => $this->handleStateThree($session, $result, $antrean),
-        };
+        try {
+            $reply = match ($session->state) {
+                ChatState::PengumpulanData => $this->handleStateOne($session, $result, $gtk),
+                ChatState::Konfirmasi => $this->handleStateTwo($session, $result, $antrean),
+                ChatState::Done => $this->handleStateThree($session, $result, $antrean),
+            };
+        } catch (GtkApiException $e) {
+            $this->handleSystemError($wa, $session, 'GTK API', $e->getMessage());
+
+            return;
+        }
 
         $session->save();
         $this->reply($wa, $reply);
+    }
+
+    /**
+     * Isi otomatis no_hp dari chat_id sebelum AI diminta menginterpretasi
+     * pesan, supaya AI tidak perlu (dan tidak boleh) menanyakan ulang nomor
+     * WA kalau nomor pengirim sudah bisa dipastikan valid dan berformat
+     * nomor Indonesia. Lihat IndonesianPhoneNumber untuk kenapa chat_id
+     * berformat "...@lid" TIDAK BOLEH dianggap sebagai nomor telepon.
+     */
+    protected function autoFillPhoneFromChatId(ChatSession $session): void
+    {
+        $context = $session->context ?? [];
+
+        if (filled($context['no_hp'] ?? null)) {
+            return;
+        }
+
+        $phone = IndonesianPhoneNumber::fromChatId($this->chatId);
+
+        if ($phone !== null) {
+            $context['no_hp'] = $phone;
+            $session->context = $context;
+        }
+    }
+
+    /**
+     * Titik tangkap tunggal untuk kegagalan sistem (AI Engine maupun GTK
+     * API) - user tetap dapat balasan yang mengarahkan ke kontak admin,
+     * dan admin otomatis diberi tahu detail errornya lewat WhatsApp supaya
+     * bisa ditindaklanjuti tanpa harus memantau log server.
+     */
+    protected function handleSystemError(WhatsAppServiceInterface $wa, ChatSession $session, string $source, string $errorDetail): void
+    {
+        Log::error("Sistem gagal memproses pesan [{$source}]", [
+            'chat_id' => $this->chatId,
+            'error' => $errorDetail,
+        ]);
+
+        $session->save();
+
+        $adminNumber = config('services.admin.whatsapp_number');
+
+        if ($adminNumber) {
+            $wa->sendText("{$adminNumber}@c.us", "Bot GTK mengalami gangguan.\n"
+                ."Sumber: {$source}\n"
+                ."Chat ID: {$this->chatId}\n"
+                ."Pesan user: {$this->text}\n"
+                ."Detail error: {$errorDetail}");
+        }
+
+        $adminContact = $adminNumber ? "wa.me/{$adminNumber}" : 'admin kami';
+
+        $this->reply($wa, 'Mohon maaf, sistem kami sedang mengalami kendala teknis saat memproses permintaan Anda. '
+            ."Tim kami sudah otomatis diberi tahu. Jika perlu bantuan segera, silakan hubungi {$adminContact}.");
     }
 
     /**
@@ -182,10 +243,14 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
     protected function resolvePatient(ChatSession $session, GtkApiService $gtk, array $context): string
     {
-        // no_hp WAJIB dari hasil tanya-jawab AI, bukan chat_id - sejumlah
-        // kontak WhatsApp (format "...@lid") tidak mengekspos nomor asli
-        // ke bot sama sekali, hanya ID internal WhatsApp.
-        $noHp = $context['no_hp'] ?? Str::before($session->chat_id, '@');
+        // no_hp normalnya sudah terisi lewat autoFillPhoneFromChatId() atau
+        // hasil tanya-jawab AI. Tetap divalidasi/normalisasi ulang di sini
+        // sebagai jaring pengaman terakhir - JANGAN PERNAH pakai potongan
+        // chat_id mentah, karena kontak berformat "...@lid" tidak mengekspos
+        // nomor asli sama sekali (lihat IndonesianPhoneNumber).
+        $noHp = IndonesianPhoneNumber::normalize($context['no_hp'] ?? null)
+            ?? IndonesianPhoneNumber::fromChatId($session->chat_id)
+            ?? '-';
 
         try {
             $found = $gtk->cariPasien([
@@ -262,7 +327,14 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             return $result['reply'];
         }
 
-        $poli = Poliklinik::query()->where('nama_poliklinik', 'like', "%{$poliInput}%")->first();
+        // Cocokkan dua arah - AI kadang menyertakan kata tambahan (mis. "Poli
+        // Fisioterapi Anak" untuk poliklinik yang di database cuma bernama
+        // "Fisioterapi"), jadi jangan hanya cek nama_poliklinik yang memuat
+        // poliInput, tapi juga sebaliknya.
+        $poli = Poliklinik::query()
+            ->where('nama_poliklinik', 'like', "%{$poliInput}%")
+            ->orWhereRaw('? LIKE CONCAT(\'%\', nama_poliklinik, \'%\')', [$poliInput])
+            ->first();
 
         if (! $poli) {
             $options = Poliklinik::query()->pluck('nama_poliklinik')->implode(', ');
@@ -382,6 +454,25 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             $antrean->cancelBooking($booking, 'Dibatalkan oleh pasien via chat');
 
             return 'Baik, jadwal kunjungan Anda telah dibatalkan.';
+        }
+
+        // Pasien yang sama minta didaftarkan untuk keluhan/kunjungan baru
+        // setelah booking sebelumnya selesai. JANGAN biarkan AI "berimprovisasi"
+        // menjalankan seluruh alur booking lewat teks bebas di STATE_3 (tidak
+        // ada klasifikasi poli/pencarian jadwal/pembuatan booking nyata di sini)
+        // - kembalikan sesi ke STATE_1 supaya alur deterministik lengkap
+        // (klasifikasi -> konfirmasi data -> pilih shift -> booking nyata)
+        // berjalan lagi dari awal untuk kunjungan ini.
+        if ($intent === 'kunjungan_baru') {
+            $context = $session->context ?? [];
+            unset($context['poli_pilihan'], $context['shift_pilihan']);
+            $session->context = $context;
+            $session->state = ChatState::PengumpulanData->value;
+            $session->step = null;
+
+            $nama = $context['nama'] ?? 'ananda';
+
+            return "Baik, akan kami bantu proses pendaftaran kunjungan baru untuk {$nama}.";
         }
 
         return $result['reply'];
