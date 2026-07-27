@@ -129,6 +129,8 @@ class WhatsappWebhookTest extends TestCase
                 'jenis_kelamin' => 'LAKI-LAKI',
                 'no_hp' => '081234567890',
                 'keluhan' => 'Demam',
+                'poli_pilihan' => 'Tumbuh Kembang Anak',
+                'poli_disetujui' => true,
             ],
             'ready_for_next_state' => true,
         ]);
