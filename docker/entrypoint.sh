@@ -7,4 +7,12 @@ php artisan config:cache
 php artisan route:cache
 php artisan view:cache
 
-exec supervisord -c /etc/supervisor/conf.d/supervisord.conf
+# Kalau container dijalankan dengan command khusus (mis. "docker compose run
+# app php artisan migrate --force", atau override command worker/scheduler),
+# jalankan command itu. Kalau tidak ada command (service "app" biasa),
+# baru start nginx+php-fpm lewat supervisord.
+if [ "$#" -eq 0 ]; then
+    exec supervisord -c /etc/supervisor/conf.d/supervisord.conf
+else
+    exec "$@"
+fi
