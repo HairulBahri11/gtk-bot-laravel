@@ -44,4 +44,16 @@ class IndonesianPhoneNumber
 
         return $number;
     }
+
+    /**
+     * Normalisasi ke format 62xxxxxxxxxx (dipakai kolom nohp di
+     * kunjungan_reminder & sebagai chatId WAHA), atau null kalau bukan
+     * nomor seluler Indonesia yang valid.
+     */
+    public static function toInternational(?string $number): ?string
+    {
+        $normalized = static::normalize($number);
+
+        return $normalized === null ? null : '62'.substr($normalized, 1);
+    }
 }
