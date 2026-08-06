@@ -32,44 +32,120 @@ class AiEngineService
             'temperature' => 0.2,
             // Dibatasi eksplisit - tanpa ini sejumlah model meminta max_tokens
             // sebesar batas model (puluhan ribu), yang bisa ditolak provider
-            // dengan 402 saat kredit akun tidak mencukupi. Balasan JSON kita
-            // singkat, jadi 2048 token jauh lebih dari cukup.
-            'max_tokens' => 2048,
+            // dengan 402 saat kredit akun tidak mencukupi. Kejadian nyata:
+            // 2048 TIDAK cukup untuk google/gemini-2.5-flash - model ini
+            // menghasilkan reasoning token tersembunyi yang ikut memakai
+            // jatah max_tokens SEBELUM JSON jawabannya sendiri mulai
+            // ditulis, jadi respons konsisten terpotong di tengah "extracted"
+            // walau balasan JSON-nya sendiri singkat. 8192 memberi ruang
+            // cukup untuk reasoning + JSON tanpa mendekati batas kredit akun.
+            'max_tokens' => 8192,
+            // Task ini murni ekstraksi terstruktur singkat - tidak butuh
+            // reasoning mendalam, dan reasoning effort tinggi justru yang
+            // menghabiskan max_tokens di atas sebelum JSON-nya sendiri
+            // selesai ditulis (lihat kejadian nyata di catatan max_tokens).
+            // Tekan reasoning effort ke minimum lewat parameter terpadu
+            // OpenRouter supaya jatah token yang tersisa buat JSON jauh
+            // lebih longgar & konsisten, bukan cuma mengandalkan max_tokens
+            // yang lebih besar.
+            'reasoning' => ['effort' => 'low'],
         ];
 
-        $response = Http::withToken(config('services.openrouter.api_key'))
-            ->baseUrl(config('services.openrouter.base_url'))
-            ->withHeaders([
-                'HTTP-Referer' => config('app.url'),
-                'X-Title' => config('app.name'),
-            ])
-            ->timeout(30)
-            ->post('/chat/completions', $payload);
+        // Walau response_format: json_object diminta, model kadang tetap
+        // menghasilkan JSON cacat/terpotong di tengah jalan (mis. kutip dobel
+        // yang terduplikasi sebelum sebuah key, atau respons terpotong
+        // sebelum JSON selesai - lihat catatan "reasoning" di atas). Ini
+        // glitch probabilistik di sisi model, bukan bug deterministik - jadi
+        // retry dengan request baru jauh lebih efektif daripada berusaha
+        // "menebak" perbaikan generik untuk semua kemungkinan bentuk JSON
+        // cacat. Sempat kejadian nyata 2x percobaan masih belum cukup.
+        $maxAttempts = 3;
+        $rawContent = null;
 
-        if ($response->failed()) {
-            Log::error('AI Engine (OpenRouter) request gagal', [
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $response = Http::withToken(config('services.openrouter.api_key'))
+                ->baseUrl(config('services.openrouter.base_url'))
+                ->withHeaders([
+                    'HTTP-Referer' => config('app.url'),
+                    'X-Title' => config('app.name'),
+                ])
+                ->timeout(30)
+                ->post('/chat/completions', $payload);
+
+            if ($response->failed()) {
+                Log::error('AI Engine (OpenRouter) request gagal', [
+                    'chat_id' => $session->chat_id,
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
+
+                throw new AiEngineException('Gagal menghubungi AI Engine: '.$response->status());
+            }
+
+            $rawContent = (string) $response->json('choices.0.message.content');
+            $decoded = json_decode($this->repairJson($rawContent), true);
+
+            if (is_array($decoded) && isset($decoded['reply'])) {
+                // Debug trail untuk diagnosa kasus data hasil ekstraksi AI
+                // tidak sesuai yang sebenarnya diminta user (mis. tanggal
+                // kunjungan) - tanpa ini kita cuma bisa melihat context yang
+                // SUDAH di-merge, tidak tahu persis apa yang AI kembalikan
+                // pada giliran tertentu.
+                Log::debug('AI Engine hasil ekstraksi', [
+                    'chat_id' => $session->chat_id,
+                    'extracted' => $decoded['extracted'] ?? [],
+                    'ready_for_next_state' => $decoded['ready_for_next_state'] ?? false,
+                ]);
+
+                return [
+                    'reply' => (string) $decoded['reply'],
+                    'extracted' => (array) ($decoded['extracted'] ?? []),
+                    'ready_for_next_state' => (bool) ($decoded['ready_for_next_state'] ?? false),
+                ];
+            }
+
+            Log::warning('AI Engine mengembalikan format tidak valid, mencoba ulang', [
                 'chat_id' => $session->chat_id,
-                'status' => $response->status(),
-                'body' => $response->body(),
+                'attempt' => $attempt,
+                'raw' => $this->sanitizeForLog($rawContent),
             ]);
-
-            throw new AiEngineException('Gagal menghubungi AI Engine: '.$response->status());
         }
 
-        $content = $response->json('choices.0.message.content');
-        $decoded = json_decode((string) $content, true);
+        Log::error('AI Engine mengembalikan format tidak valid', [
+            'chat_id' => $session->chat_id,
+            'raw' => $this->sanitizeForLog($rawContent),
+        ]);
 
-        if (! is_array($decoded) || ! isset($decoded['reply'])) {
-            Log::error('AI Engine mengembalikan format tidak valid', ['raw' => $content]);
+        throw new AiEngineException('Format response AI Engine tidak valid');
+    }
 
-            throw new AiEngineException('Format response AI Engine tidak valid');
+    /**
+     * Respons yang terpotong di tengah jalan (lihat catatan "reasoning" di
+     * atas) kadang berhenti persis di tengah karakter multi-byte UTF-8 -
+     * baris "raw" itu jadi string ber-UTF-8 tidak valid. Monolog/json_encode
+     * bisa gagal MENULIS SELURUH baris log kalau salah satu nilai context-nya
+     * bukan UTF-8 valid, sehingga baris log yang justru paling penting untuk
+     * didiagnosa (raw response yang gagal) malah hilang tanpa jejak. Bersihkan
+     * dulu di sini supaya log kegagalan ini selalu tercatat.
+     */
+    protected function sanitizeForLog(?string $value): ?string
+    {
+        if ($value === null) {
+            return null;
         }
 
-        return [
-            'reply' => (string) $decoded['reply'],
-            'extracted' => (array) ($decoded['extracted'] ?? []),
-            'ready_for_next_state' => (bool) ($decoded['ready_for_next_state'] ?? false),
-        ];
+        return mb_convert_encoding($value, 'UTF-8', 'UTF-8');
+    }
+
+    /**
+     * Perbaiki pola JSON cacat yang sejauh ini teramati dari model (mis.
+     * tanda kutip dobel yang terduplikasi tepat sebelum nama key, seperti
+     * `""extracted":`). Hanya menyasar pola spesifik ini - bukan JSON
+     * repair umum - supaya tidak berisiko merusak konten "reply" yang sah.
+     */
+    protected function repairJson(string $content): string
+    {
+        return preg_replace('/""(\w+)"\s*:/', '"$1":', $content) ?? $content;
     }
 
     /**
@@ -118,6 +194,10 @@ class AiEngineService
         $adminNumber = \App\Support\IndonesianPhoneNumber::normalize(config('services.admin.whatsapp_number'))
             ?? config('services.admin.whatsapp_number');
 
+        $today = now();
+        $hariIndo = [1 => 'Senin', 2 => 'Selasa', 3 => 'Rabu', 4 => 'Kamis', 5 => 'Jumat', 6 => 'Sabtu', 7 => 'Minggu'];
+        $todayLabel = ($hariIndo[$today->dayOfWeekIso] ?? '').', '.$today->format('Y-m-d');
+
         return <<<PROMPT
             Kamu adalah AI Pre-Layanan resmi Graha Tumbuh Kembang Anak Jombang (GTK),
             melayani orang tua pasien via WhatsApp untuk registrasi & booking kunjungan
@@ -130,6 +210,16 @@ class AiEngineService
             berarti bertele-tele.
 
             ATURAN WAJIB:
+            - Tanggal hari ini (acuan mutlak - JANGAN PERNAH menebak/mengasumsikan
+              tanggal hari ini sendiri, JANGAN PERNAH pakai tanggal/tahun lain):
+              {$todayLabel}. WAJIB pakai ini sebagai acuan untuk menghitung SEMUA
+              tanggal relatif yang disebut user (mis. "besok", "minggu depan",
+              "tanggal 5") maupun memvalidasi tanggal absolut yang disebut user.
+              Kalau user menyebut tanggal tanpa tahun (mis. "5 Agustus"), asumsikan
+              tahun berjalan dari tanggal hari ini di atas - kecuali tanggal itu
+              sudah lewat di tahun berjalan, baru pakai tahun berikutnya. JANGAN
+              PERNAH keliru/tertukar tahun, terutama untuk tanggal_kunjungan yang
+              WAJIB selalu di hari ini atau setelahnya.
             - Jangan pernah melompat ke tahap booking sebelum semua data pada tahap
               STATE 1 (nama anak, tanggal lahir format yyyy-mm-dd, nama ibu kandung,
               keluhan) tervalidasi lengkap.
@@ -146,9 +236,37 @@ class AiEngineService
               berhasil/dikonfirmasi/diproses, kecuali kamu benar-benar melihat
               pesan sistem sebelumnya (dari "assistant" di riwayat) yang
               eksplisit berbunyi "Booking berhasil!" atau menyebut "No. Rawat".
-              Kepastian booking HANYA ditentukan oleh sistem, bukan olehmu -
-              kalau ragu, sampaikan bahwa permintaan sedang diproses, jangan
-              mengklaim keberhasilan sendiri.
+              Kepastian booking HANYA ditentukan oleh sistem, bukan olehmu.
+            - JANGAN PERNAH membalas dengan kalimat menahan/menunda dalam bentuk
+              APAPUN - baik "sedang diproses"/"mohon tunggu"/"dalam antrean"/
+              "akan segera kami konfirmasi", MAUPUN variasi/parafrase lain yang
+              maknanya sama (mis. "telah kami teruskan ke sistem untuk
+              diproses", "sedang kami tindaklanjuti", "akan kami kabari
+              selanjutnya"). Prinsipnya: setiap pesan user diproses SAAT ITU
+              JUGA secara langsung, TIDAK ADA proses "menunggu"/"diteruskan"/
+              "ditindaklanjuti" apapun di baliknya - reply APAPUN yang
+              intinya "tunggu, nanti diproses/dikabari" TANPA benar-benar
+              menyelesaikan langkah berikutnya SELALU salah & membuat pasien
+              menunggu tanpa alasan, apapun kata-kata persisnya.
+            - Kalau user memberi jawaban AFIRMATIF yang jelas terhadap
+              pertanyaan konfirmasi yang barusan KAMU ajukan sendiri (mis.
+              "ya"/"benar"/"sudah sesuai"/"setuju"/"proses"/"lanjutkan" sebagai
+              jawaban atas ringkasan atau pertanyaan ya/tidak), WAJIB langsung
+              set extracted.konfirmasi = true pada giliran itu juga (dengan
+              ready_for_next_state = true kalau seluruh syarat state ini sudah
+              terpenuhi) - JANGAN PERNAH membalas dengan kalimat menahan/
+              menunda seperti di atas sebagai gantinya. Sistem yang akan
+              memvalidasi & memberi tahu kalau ternyata ada kendala (mis.
+              jadwal tidak tersedia) - tugasmu HANYA meneruskan konfirmasi
+              user itu apa adanya, bukan menahannya sendiri.
+            - Kalau ragu/tidak yakin status booking, atau user membalas
+              kalimat samar seperti "lanjutkan"/"bagaimana"/"gimana
+              selanjutnya" TANPA konteks pertanyaan konfirmasi sebelumnya,
+              JANGAN berhenti - langsung lanjutkan tugas nyata di STATE saat
+              ini: kalau masih ada data wajib yang kosong (lihat data
+              terkumpul di atas), tanyakan persis field yang masih kosong itu;
+              kalau semua data lengkap, lanjutkan ke langkah berikutnya sesuai
+              instruksi STATE di bawah.
             - Nomor WhatsApp admin kami: {$adminNumber}. Kalau ada kendala teknis,
               ATAU user menanyakan hal yang jawabannya TIDAK ADA di data/instruksi
               pada prompt ini (mis. jadwal dokter di jam spesifik, ketersediaan
@@ -166,6 +284,11 @@ class AiEngineService
                   "jenis_kelamin": "<LAKI-LAKI|PEREMPUAN atau null>",
                   "no_hp": "<nomor WhatsApp aktif, format 08xxxxxxxxxx atau
                     62xxxxxxxxxx, atau null>",
+                  "no_hp_dikonfirmasi": <true jika orang tua sudah eksplisit
+                    mengonfirmasi/mengetik sendiri nomor "no_hp" di atas
+                    pada giliran ini atau giliran sebelumnya, false/null
+                    kalau nomor itu baru saran otomatis yang belum
+                    dikonfirmasi>,
                   "keluhan": "<atau null>",
                   "poli_pilihan": "<salah satu Nama Poliklinik persis seperti
                     di TABEL KLASIFIKASI LAYANAN begitu keluhan berhasil
@@ -175,6 +298,22 @@ class AiEngineService
                     false kalau belum/baru saja disampaikan, null kalau
                     poli_pilihan juga belum ada>,
                   "shift_pilihan": "<pagi|sore|malam atau null>",
+                  "tanggal_kunjungan": "<WAJIB diisi salah satu dari dua
+                    kemungkinan ini begitu tanggal_kunjungan_dijawab = true
+                    (JANGAN PERNAH null/kosong kalau tanggal_kunjungan_dijawab
+                    = true - dua field ini SELALU diisi BERSAMAAN):
+                    (1) yyyy-mm-dd sesuai tanggal spesifik yang diinginkan
+                    user untuk kunjungan/booking (BUKAN tanggal lahir), atau
+                    (2) string literal \"secepatnya\" HANYA kalau user
+                    eksplisit bilang tidak ada preferensi tanggal. Null HANYA
+                    valid selama tanggal_kunjungan_dijawab masih false/null
+                    (pertanyaan belum dijawab) - lihat STATE_2_KONFIRMASI>",
+                  "tanggal_kunjungan_dijawab": <true HANYA jika user sudah
+                    benar-benar diberi pertanyaan soal tanggal kunjungan
+                    DAN sudah menjawabnya (baik dengan tanggal spesifik
+                    maupun bilang "secepatnya"/"terserah" secara eksplisit),
+                    false/null kalau pertanyaan itu belum pernah diajukan
+                    atau belum dijawab user - lihat STATE_2_KONFIRMASI>,
                   "konfirmasi": <true|false|null>,
                   "intent": "<batal|reschedule|kunjungan_baru|tanya|null>"
                 },
@@ -244,14 +383,35 @@ class AiEngineService
                keterbacaan. Field yang mungkin perlu ditanyakan: Nama Anak,
                Tanggal Lahir (yyyy-mm-dd), Nama Ibu Kandung, Jenis Kelamin, dan
                Nomor WhatsApp aktif.
-               PENTING soal no_hp: nomor WhatsApp pengirim SUDAH otomatis diambil
-               dan diisi ke data terkumpul sebelum percakapan ini dimulai, jika
-               formatnya terdeteksi valid sebagai nomor Indonesia. Jadi field
-               "no_hp" HANYA perlu ditanyakan kalau memang MASIH KOSONG pada
-               data terkumpul - itu artinya nomor pengirim tidak bisa dideteksi
-               otomatis (mis. kontak tersembunyi atau bukan nomor Indonesia).
-               JANGAN PERNAH menanyakan ulang no_hp kalau field itu sudah
-               terisi di data terkumpul.
+               PENTING soal no_hp: nomor WhatsApp pengirim MUNGKIN sudah
+               otomatis diambil & diisi ke field "no_hp" pada data terkumpul
+               sebelum percakapan ini dimulai, jika formatnya terdeteksi valid
+               sebagai nomor Indonesia. TAPI ini baru SARAN awal, BUKAN nomor
+               final - supaya nomor yang tersimpan di data pasien tidak salah
+               (mis. WA yang dipakai chat bukan nomor yang aktif dihubungi),
+               WAJIB dikonfirmasi dulu ke orang tua sebelum dianggap sah:
+               - Kalau "no_hp" SUDAH terisi TAPI "no_hp_dikonfirmasi" BELUM
+                 true, kamu WAJIB menyebutkan nomor tsb & menanyakan apakah
+                 itu nomor WhatsApp aktif yang bisa dihubungi untuk info
+                 jadwal, atau orang tua ingin memakai nomor lain - gabungkan
+                 pertanyaan ini secara natural dalam pesan yang sama saat
+                 menanyakan field lain yang masih kosong.
+               - Begitu orang tua membalas (baik mengonfirmasi nomor yang
+                 disebutkan MAUPUN memberi nomor lain), set
+                 extracted.no_hp_dikonfirmasi = true pada giliran itu. Kalau
+                 mereka memberi nomor baru, isi extracted.no_hp dengan nomor
+                 barunya (gantikan yang lama).
+               - Kalau "no_hp" MASIH KOSONG (nomor pengirim tidak terdeteksi
+                 otomatis, mis. kontak tersembunyi/bukan nomor Indonesia),
+                 tanyakan langsung nomor WhatsApp aktif orang tua seperti
+                 field kosong lainnya. Begitu mereka menjawab dengan sebuah
+                 nomor, isi extracted.no_hp DAN langsung set
+                 extracted.no_hp_dikonfirmasi = true di giliran yang sama -
+                 karena mereka mengetik sendiri, tidak perlu konfirmasi
+                 tambahan.
+               - SEKALI no_hp_dikonfirmasi bernilai true, JANGAN PERNAH
+                 menanyakan/menampilkan ulang konfirmasi nomor ini lagi,
+                 kecuali orang tua sendiri ingin mengoreksinya.
                Mode satu-per-satu HANYA dipakai sebagai fallback: kalau
                setelah user membalas pesan di atas masih ada field yang
                kosong/tidak valid, baru tanyakan secara spesifik & empatik
@@ -261,7 +421,9 @@ class AiEngineService
                tanggal lahir, nama ibu kandung, jenis kelamin, no_hp, DAN
                keluhan (dengan poli_pilihan hasil klasifikasi) sudah lengkap &
                valid, DAN extracted.poli_disetujui = true (bukan pada giliran
-               pertama kali saran poliklinik itu disampaikan).
+               pertama kali saran poliklinik itu disampaikan), DAN
+               extracted.no_hp_dikonfirmasi = true (lihat "PENTING soal
+               no_hp" di atas).
 
             TABEL KLASIFIKASI LAYANAN (cocokkan keluhan ke kata kunci berikut,
             urutkan dari atas - jika keluhan cocok ke kata kunci poli spesifik
@@ -355,10 +517,47 @@ class AiEngineService
             biasanya SUDAH terisi dari hasil klasifikasi keluhan di STATE 1 -
             JANGAN tanyakan ulang poliklinik jika sudah ada di data terkumpul,
             cukup konfirmasikan dalam ringkasan. Hanya tanyakan poli_pilihan jika
-            memang masih kosong. Tanyakan pilihan shift (pagi/sore/malam) jika
-            belum dipilih, lalu minta konfirmasi akhir ("ya"/"tidak"). Set
-            extracted.konfirmasi true hanya jika user menyetujui dengan jelas.
-            Set ready_for_next_state true hanya setelah konfirmasi diterima.
+            memang masih kosong.
+
+            Tanyakan dua hal berikut (boleh digabung natural dalam satu pesan)
+            kalau belum terisi di data terkumpul:
+            - Shift kunjungan (pagi/sore/malam).
+            - Tanggal kunjungan yang diinginkan - WAJIB ditanyakan secara
+              eksplisit, JANGAN pernah lompat langsung ke permintaan
+              konfirmasi akhir sebelum pertanyaan ini benar-benar diajukan
+              & dijawab user. User BOLEH memilih tanggal kapan saja ke depan
+              (tidak harus hari ini/besok, boleh jauh-jauh hari). Kalau user
+              menyebutkan tanggal (format bebas, mis. "20 Agustus", "minggu
+              depan", "20-08-2026"), normalisasikan ke yyyy-mm-dd dan isi
+              extracted.tanggal_kunjungan dengan itu - JANGAN menolak atau
+              mengoreksi tanggal yang disebutkan sendiri, sistem yang akan
+              memvalidasi ketersediaan jadwalnya dan memberi tahu kalau
+              perlu pilih tanggal lain. Kalau user bilang "secepatnya"/
+              "terserah"/"kapan saja" (tidak punya preferensi), isi
+              extracted.tanggal_kunjungan dengan string "secepatnya" (BUKAN
+              null) supaya sistem otomatis carikan jadwal terdekat - TAPI
+              TETAP WAJIB tanya dulu, jangan berasumsi "secepatnya" sendiri
+              tanpa user benar-benar menyatakannya.
+              PENTING: extracted.tanggal_kunjungan DAN
+              extracted.tanggal_kunjungan_dijawab WAJIB diisi BERSAMAAN pada
+              giliran yang sama persis - begitu kamu set
+              tanggal_kunjungan_dijawab = true, extracted.tanggal_kunjungan
+              di giliran ITU JUGA WAJIB sudah berisi tanggal spesifik atau
+              "secepatnya" (JANGAN PERNAH kosong/null). SEKALI
+              tanggal_kunjungan_dijawab true, jangan tanyakan ulang.
+
+            Setelah tanggal_kunjungan_dijawab = true, tampilkan ringkasan
+            LENGKAP (termasuk tanggal kunjungan yang baru dicatat) lalu minta
+            konfirmasi akhir ("ya"/"tidak") sebagai pertanyaan TERSENDIRI.
+            JANGAN pernah menganggap persetujuan umum yang disampaikan user
+            SEBELUM tanggal ditanyakan (mis. "iya sudah benar" terhadap
+            ringkasan yang belum ada tanggalnya) sebagai konfirmasi booking
+            final - user harus benar-benar menjawab "ya" SETELAH melihat
+            ringkasan lengkap dengan tanggal di dalamnya. Set
+            extracted.konfirmasi true hanya pada giliran itu. Set
+            ready_for_next_state true HANYA setelah shift_pilihan terisi DAN
+            tanggal_kunjungan_dijawab = true (dengan tanggal_kunjungan terisi)
+            DAN konfirmasi terhadap ringkasan LENGKAP itu diterima.
             TXT;
     }
 

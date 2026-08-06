@@ -2,6 +2,7 @@
 
 namespace App\Services\Gtk;
 
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -86,11 +87,27 @@ class GtkApiService
      */
     protected function request(string $method, string $endpoint, array $params = [], bool $retry = true): array
     {
-        $response = match ($method) {
-            'get' => $this->client()->get($this->scriptUrl(), array_merge(['url' => $endpoint], $params)),
-            'post', 'patch' => $this->client()->{$method}($this->endpointUrl($endpoint), $params),
-            default => throw new \InvalidArgumentException("Unsupported HTTP method: {$method}"),
-        };
+        // Http client Laravel melempar ConnectionException (bukan response
+        // gagal biasa) untuk kegagalan level jaringan (timeout, connection
+        // refused, dsb) - beda dari GtkApiException yang dipakai untuk error
+        // level aplikasi GTK (401/404/409/dst). Bungkus di sini supaya
+        // pemanggil cukup tangani satu jenis exception (GtkApiException)
+        // untuk semua kegagalan GTK API, termasuk saat server GTK unreachable.
+        try {
+            $response = match ($method) {
+                'get' => $this->client()->get($this->scriptUrl(), array_merge(['url' => $endpoint], $params)),
+                'post', 'patch' => $this->client()->{$method}($this->endpointUrl($endpoint), $params),
+                default => throw new \InvalidArgumentException("Unsupported HTTP method: {$method}"),
+            };
+        } catch (ConnectionException $e) {
+            Log::error('GTK API tidak bisa dihubungi', [
+                'endpoint' => $endpoint,
+                'method' => $method,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw new GtkApiException('Tidak bisa menghubungi server GTK: '.$e->getMessage(), 0);
+        }
 
         $body = $response->json() ?? [];
         $code = (int) ($body['metadata']['code'] ?? $response->status());

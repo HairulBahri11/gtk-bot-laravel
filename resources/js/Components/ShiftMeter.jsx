@@ -1,6 +1,6 @@
 // Meter (ratio-against-limit) per shift - satu hue sekuensial (biru),
 // track abu-abu netral, ujung membulat, label langsung di atas bar.
-export default function ShiftMeter({ label, used, total }) {
+export default function ShiftMeter({ label, timeRange, note, used, total }) {
     const pct = total > 0 ? Math.round((used / total) * 100) : 0;
     const clampedPct = Math.min(100, pct);
 
@@ -9,9 +9,15 @@ export default function ShiftMeter({ label, used, total }) {
             <div className="mb-1.5 flex items-baseline justify-between text-sm">
                 <span className="font-medium text-gray-700 dark:text-gray-300">
                     {label}
+                    {timeRange && (
+                        <span className="font-normal text-gray-400 dark:text-gray-500">
+                            {' '}
+                            · {timeRange}
+                        </span>
+                    )}
                 </span>
                 <span className="tabular-nums text-gray-500 dark:text-gray-400">
-                    {used}/{total} slot ({pct}%)
+                    {used}/{total} ({pct}%)
                 </span>
             </div>
             <div className="h-2.5 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
@@ -20,6 +26,11 @@ export default function ShiftMeter({ label, used, total }) {
                     style={{ width: `${clampedPct}%` }}
                 />
             </div>
+            {note && (
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {note}
+                </p>
+            )}
         </div>
     );
 }

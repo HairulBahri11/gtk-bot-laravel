@@ -34,7 +34,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::post('/antrean/{booking}/no-show', [AntreanController::class, 'noShow'])->name('antrean.no-show');
         Route::post('/antrean/{booking}/cancel', [AntreanController::class, 'cancel'])->name('antrean.cancel');
 
-        Route::get('/monitoring', [MonitoringController::class, 'index'])->name('monitoring.index');
+        // Endpoint JSON untuk modal transkrip chat di halaman Antrean - lihat
+        // MonitoringController.
         Route::get('/monitoring/{chatSession}', [MonitoringController::class, 'show'])->name('monitoring.show');
     });
 

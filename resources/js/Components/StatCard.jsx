@@ -30,12 +30,15 @@ const ROLE_CLASSES = {
     },
 };
 
-export default function StatCard({ icon, color = 'blue', label, value, suffix }) {
+export default function StatCard({ icon, color = 'blue', label, value, suffix, subtitle }) {
     const roleClasses = ROLE_CLASSES[color] ?? ROLE_CLASSES.blue;
 
     return (
         <div className="overflow-hidden rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200/70 transition-shadow hover:shadow-md dark:bg-gray-900 dark:ring-gray-800">
-            <div className="flex items-center gap-3">
+            <div className="flex items-start justify-between gap-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                    {label}
+                </div>
                 <span
                     className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${roleClasses.wash}`}
                 >
@@ -53,9 +56,6 @@ export default function StatCard({ icon, color = 'blue', label, value, suffix })
                         />
                     </svg>
                 </span>
-                <div className="text-sm font-medium text-gray-500 dark:text-gray-400">
-                    {label}
-                </div>
             </div>
             <div className="mt-3 text-3xl font-semibold tabular-nums text-gray-900 dark:text-gray-100">
                 {value}
@@ -65,6 +65,11 @@ export default function StatCard({ icon, color = 'blue', label, value, suffix })
                     </span>
                 )}
             </div>
+            {subtitle && (
+                <div className="mt-1 truncate text-sm text-gray-500 dark:text-gray-400" title={subtitle}>
+                    {subtitle}
+                </div>
+            )}
         </div>
     );
 }
