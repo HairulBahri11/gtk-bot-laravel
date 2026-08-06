@@ -1,25 +1,25 @@
 services:
   app:
     build: .
-    image: gtkjombang-dashboard:latest
-    container_name: gtkjombang-dashboard-app
+    image: gtkjombang-dashboard:${APP_ENV_TAG:-prod}
+    container_name: gtkjombang-dashboard-app-${APP_ENV_TAG:-prod}
     restart: always
     env_file:
       - .env
     labels:
       - traefik.enable=true
-      - traefik.http.routers.gtkjombang-dashboard.rule=Host(`dashboard.gtkjombang.com`)
-      - traefik.http.routers.gtkjombang-dashboard.tls=true
-      - traefik.http.routers.gtkjombang-dashboard.entrypoints=web,websecure
-      - traefik.http.routers.gtkjombang-dashboard.tls.certresolver=mytlschallenge
-      - traefik.http.services.gtkjombang-dashboard.loadbalancer.server.port=80
+      - traefik.http.routers.gtkjombang-dashboard-${APP_ENV_TAG:-prod}.rule=Host(`${APP_DOMAIN:-dashboard.gtkjombang.com}`)
+      - traefik.http.routers.gtkjombang-dashboard-${APP_ENV_TAG:-prod}.tls=true
+      - traefik.http.routers.gtkjombang-dashboard-${APP_ENV_TAG:-prod}.entrypoints=web,websecure
+      - traefik.http.routers.gtkjombang-dashboard-${APP_ENV_TAG:-prod}.tls.certresolver=mytlschallenge
+      - traefik.http.services.gtkjombang-dashboard-${APP_ENV_TAG:-prod}.loadbalancer.server.port=80
     networks:
       - web
 
   worker:
     build: .
-    image: gtkjombang-dashboard:latest
-    container_name: gtkjombang-dashboard-worker
+    image: gtkjombang-dashboard:${APP_ENV_TAG:-prod}
+    container_name: gtkjombang-dashboard-worker-${APP_ENV_TAG:-prod}
     restart: always
     env_file:
       - .env
@@ -29,8 +29,8 @@ services:
 
   scheduler:
     build: .
-    image: gtkjombang-dashboard:latest
-    container_name: gtkjombang-dashboard-scheduler
+    image: gtkjombang-dashboard:${APP_ENV_TAG:-prod}
+    container_name: gtkjombang-dashboard-scheduler-${APP_ENV_TAG:-prod}
     restart: always
     env_file:
       - .env

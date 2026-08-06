@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
-# Deploy/update gtk-bot-laravel (dashboard.gtkjombang.com) di VPS.
+# Deploy/update gtk-bot-laravel di VPS. Dipakai untuk stack mana pun
+# (production maupun dev) - tinggal taruh script ini di masing-masing
+# folder clone (mis. /docker/gtkjombang-dashboard dan
+# /docker/gtkjombang-dashboard-dev), branch & domain dibaca dari branch
+# git yang lagi checkout & dari .env (APP_ENV_TAG/APP_DOMAIN) di folder itu.
 # Jalankan dari root project: ./deploy/deploy.sh
 set -euo pipefail
 
-APP_DIR="/docker/gtkjombang-dashboard"
-BRANCH="main"
-
+# Folder tempat script ini berada = root project (bukan hardcode path),
+# supaya script yang sama valid dipakai di folder prod maupun dev.
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$APP_DIR"
 
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+
+echo ">> Folder   : $APP_DIR"
+echo ">> Branch   : $BRANCH"
 echo ">> Menarik update dari branch $BRANCH"
 git pull origin "$BRANCH"
 
