@@ -21,9 +21,7 @@ use Illuminate\Support\Facades\Log;
  */
 class QuotaService
 {
-    public function __construct(protected GtkApiService $gtk)
-    {
-    }
+    public function __construct(protected GtkApiService $gtk) {}
 
     /**
      * Tarik master poliklinik, dokter aktif, dan jadwal dokter dari GTK,
@@ -94,6 +92,13 @@ class QuotaService
         /** @var array<int, string> $kodeDokterList */
         $kodeDokterList = Doctor::query()->pluck('kode_dokter')->all();
 
+        // Dokter dengan jadwal manual (mis. dr. Retno Wulandari, SpA - GTK
+        // /jadwaldokter tidak punya data untuknya) TIDAK BOLEH ikut sync GTK
+        // sama sekali, walau kode_dokter-nya kebetulan dikenal lokal - lihat
+        // migration add_source_to_doctor_schedules_table. Baris jadwal
+        // 'manual' harus tetap satu-satunya sumber untuk dokter ini.
+        $manualKodeDokter = DoctorSchedule::query()->where('source', 'manual')->pluck('kode_dokter')->unique();
+
         // GET /jadwaldokter hanya mengembalikan NAMA poliklinik ("poliklinik"),
         // bukan kode-nya - resolve lewat tabel poliklinik lokal (sudah
         // disinkronkan di syncPoliklinik(), dipanggil lebih dulu di
@@ -104,6 +109,10 @@ class QuotaService
         $rows = [];
 
         foreach ($kodeDokterList as $kodeDokter) {
+            if ($manualKodeDokter->contains($kodeDokter)) {
+                continue;
+            }
+
             try {
                 $result = $this->gtk->jadwalDokter(['kodedokter' => $kodeDokter]);
             } catch (\Throwable $e) {
@@ -151,6 +160,7 @@ class QuotaService
                         'jam_selesai' => $jadwal['jam_selesai'],
                         'shift' => $shift->value,
                         'kuota_total' => $jadwal['kuota'] ?? 0,
+                        'source' => 'gtk',
                         'synced_at' => $now,
                     ];
                 }
@@ -163,7 +173,7 @@ class QuotaService
             DoctorSchedule::query()->upsert(
                 $chunk,
                 ['kode_dokter', 'hari', 'jam_mulai'],
-                ['kode_poliklinik', 'jam_selesai', 'shift', 'kuota_total', 'synced_at'],
+                ['kode_poliklinik', 'jam_selesai', 'shift', 'kuota_total', 'source', 'synced_at'],
             );
         }
     }
@@ -272,7 +282,12 @@ class QuotaService
     {
         $quota = $this->findQuota($kodeDokter, $tanggal, $shift);
 
-        return $quota !== null && $quota->kuota_tersisa > 0;
+        return $quota !== null && $quota->status !== 'cancelled' && $quota->kuota_tersisa > 0;
+    }
+
+    public function isCancelled(string $kodeDokter, string $tanggal, Shift $shift): bool
+    {
+        return $this->findQuota($kodeDokter, $tanggal, $shift)?->status === 'cancelled';
     }
 
     /**
@@ -334,4 +349,90 @@ class QuotaService
         $quota->kuota_total += $amount;
         $quota->save();
     }
+
+    /**
+     * Tandai shift pada tanggal tertentu batal (dipicu perintah dokter via
+     * WA atau dashboard) - booking yang sudah ada TIDAK disentuh di sini,
+     * itu tanggung jawab AntreanService::cancelShiftAndReschedule() yang
+     * memanggil method ini.
+     */
+    public function cancelShift(string $kodeDokter, string $tanggal, Shift $shift, ?string $reason = null): QuotaShift
+    {
+        $quota = $this->resolveOrCreateQuota($kodeDokter, $tanggal, $shift);
+        $quota->update(['status' => 'cancelled', 'delay_minutes' => null, 'reason' => $reason]);
+
+        return $quota->fresh();
+    }
+
+    /**
+     * Tandai shift pada tanggal tertentu delay N menit - booking tetap di
+     * shift yang sama, hanya jam efektifnya mundur (lihat AntreanService::
+     * delayShiftAndNotify() untuk notifikasi ke pasien terdampak).
+     */
+    public function delayShift(string $kodeDokter, string $tanggal, Shift $shift, int $delayMinutes, ?string $reason = null): QuotaShift
+    {
+        $quota = $this->resolveOrCreateQuota($kodeDokter, $tanggal, $shift);
+        $quota->update(['status' => 'delayed', 'delay_minutes' => $delayMinutes, 'reason' => $reason]);
+
+        return $quota->fresh();
+    }
+
+    /**
+     * Kembalikan shift ke status normal - dipakai dashboard sebagai koreksi
+     * kalau cancel/delay salah input.
+     */
+    public function reopenShift(string $kodeDokter, string $tanggal, Shift $shift): QuotaShift
+    {
+        $quota = $this->resolveOrCreateQuota($kodeDokter, $tanggal, $shift);
+        $quota->update(['status' => 'open', 'delay_minutes' => null, 'reason' => null]);
+
+        return $quota->fresh();
+    }
+
+    /**
+     * quota_shifts hanya diisi untuk N hari ke depan (lihat rebuildQuotaShifts()) -
+     * kalau dokter membatalkan/delay tanggal yang belum sempat di-generate
+     * (mis. baru sync semalam, atau dokter aksi untuk >14 hari ke depan),
+     * bangun barisnya di sini dari template doctor_schedules supaya
+     * cancelShift()/delayShift() tidak gagal begitu saja.
+     */
+    protected function resolveOrCreateQuota(string $kodeDokter, string $tanggal, Shift $shift): QuotaShift
+    {
+        $quota = $this->findQuota($kodeDokter, $tanggal, $shift);
+
+        if ($quota) {
+            return $quota;
+        }
+
+        $hari = self::HARI_BY_ISO[Carbon::parse($tanggal)->dayOfWeekIso] ?? null;
+
+        $schedule = DoctorSchedule::query()
+            ->where('kode_dokter', $kodeDokter)
+            ->where('shift', $shift->value)
+            ->where('hari', $hari)
+            ->first();
+
+        if (! $schedule) {
+            throw new \RuntimeException("Dokter {$kodeDokter} tidak memiliki jadwal shift {$shift->value} pada tanggal {$tanggal}.");
+        }
+
+        return QuotaShift::create([
+            'kode_dokter' => $kodeDokter,
+            'kode_poliklinik' => $schedule->kode_poliklinik,
+            'tanggal' => $tanggal,
+            'shift' => $shift->value,
+            'kuota_total' => $schedule->kuota_total,
+            'kuota_terpakai' => 0,
+        ]);
+    }
+
+    /**
+     * ISO-8601 dayOfWeekIso (1 = Senin ... 7 = Minggu) <-> nama hari yang
+     * dipakai kolom DoctorSchedule::hari - sama seperti konstanta yang
+     * dipakai ProcessIncomingWhatsappMessage.
+     */
+    protected const HARI_BY_ISO = [
+        1 => 'SENIN', 2 => 'SELASA', 3 => 'RABU', 4 => 'KAMIS',
+        5 => 'JUMAT', 6 => 'SABTU', 7 => 'MINGGU',
+    ];
 }

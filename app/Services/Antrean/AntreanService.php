@@ -4,9 +4,11 @@ namespace App\Services\Antrean;
 
 use App\Enums\BookingStatus;
 use App\Enums\Shift;
+use App\Jobs\NotifyShiftChangeJob;
 use App\Models\Booking;
 use App\Models\ChatSession;
 use App\Models\DoctorSchedule;
+use App\Models\QuotaShift;
 use App\Services\Gtk\GtkApiException;
 use App\Services\Gtk\GtkApiService;
 use App\Services\Quota\QuotaService;
@@ -24,8 +26,7 @@ class AntreanService
     public function __construct(
         protected GtkApiService $gtk,
         protected QuotaService $quota,
-    ) {
-    }
+    ) {}
 
     /**
      * ISO-8601 dayOfWeekIso (1 = Senin ... 7 = Minggu) <-> nama hari yang
@@ -243,5 +244,189 @@ class AntreanService
     public function offerAlternative(string $kodeDokter, string $tanggal): array
     {
         return $this->quota->suggestAlternatives($kodeDokter, $tanggal);
+    }
+
+    /**
+     * Perintah dokter (WA) atau dashboard: batalkan shift pada tanggal
+     * tertentu. Semua booking booked/confirmed di kombinasi dokter+tanggal+
+     * shift ini otomatis digeser ke shift berikutnya di hari yang sama
+     * (pagi->sore->malam), geser berantai lagi kalau shift berikutnya juga
+     * penuh/batal. Kalau tidak ada shift terbuka tersisa hari itu, booking
+     * dibiarkan apa adanya - pasien diberi tahu + ditawarkan alternatif
+     * lewat notifikasi, bukan dipindah paksa ke hari lain tanpa persetujuan
+     * (pasien bisa lanjut lewat alur chat normal, intent "kunjungan_baru").
+     */
+    public function cancelShiftAndReschedule(string $kodeDokter, string $tanggal, Shift $shift, ?string $reason = null): QuotaShift
+    {
+        $quotaShift = $this->quota->cancelShift($kodeDokter, $tanggal, $shift, $reason);
+
+        $affected = Booking::query()
+            ->where('kode_dokter', $kodeDokter)
+            ->whereDate('tanggal_periksa', $tanggal)
+            ->where('shift', $shift->value)
+            ->whereIn('status', [BookingStatus::Booked->value, BookingStatus::Confirmed->value])
+            ->get();
+
+        $staggerOffset = 0;
+
+        foreach ($affected as $booking) {
+            $staggerOffset += random_int(
+                (int) config('gtk.notification_stagger_min_seconds'),
+                (int) config('gtk.notification_stagger_max_seconds'),
+            );
+
+            $target = $this->findNextOpenShiftSameDay($kodeDokter, $tanggal, $shift);
+            $newBooking = $target ? $this->moveBookingToShift($booking, $tanggal, $target, $reason ?? "Shift {$shift->label()} dibatalkan dokter") : null;
+
+            if ($newBooking) {
+                NotifyShiftChangeJob::dispatch($newBooking->id, 'rescheduled', [
+                    'old_shift' => $shift->value,
+                    'new_shift' => $target->value,
+                    'tanggal' => $tanggal,
+                    'reason' => $reason,
+                ])->delay(now()->addSeconds($staggerOffset));
+
+                continue;
+            }
+
+            NotifyShiftChangeJob::dispatch($booking->id, 'cancelled_no_alternative', [
+                'tanggal' => $tanggal,
+                'shift' => $shift->value,
+                'reason' => $reason,
+                'alternatif' => $this->quota->suggestAlternatives($kodeDokter, $tanggal),
+            ])->delay(now()->addSeconds($staggerOffset));
+        }
+
+        return $quotaShift;
+    }
+
+    /**
+     * Perintah dokter (WA) atau dashboard: tandai shift pada tanggal
+     * tertentu delay N menit. Booking tidak dipindah (tetap di shift yang
+     * sama) - hanya notifikasi ke pasien terdampak yang berisi jam efektif
+     * baru.
+     */
+    public function delayShiftAndNotify(string $kodeDokter, string $tanggal, Shift $shift, int $delayMinutes, ?string $reason = null): QuotaShift
+    {
+        $quotaShift = $this->quota->delayShift($kodeDokter, $tanggal, $shift, $delayMinutes, $reason);
+
+        $affected = Booking::query()
+            ->where('kode_dokter', $kodeDokter)
+            ->whereDate('tanggal_periksa', $tanggal)
+            ->where('shift', $shift->value)
+            ->whereIn('status', [BookingStatus::Booked->value, BookingStatus::Confirmed->value])
+            ->get();
+
+        $staggerOffset = 0;
+
+        foreach ($affected as $booking) {
+            $staggerOffset += random_int(
+                (int) config('gtk.notification_stagger_min_seconds'),
+                (int) config('gtk.notification_stagger_max_seconds'),
+            );
+
+            NotifyShiftChangeJob::dispatch($booking->id, 'delayed', [
+                'tanggal' => $tanggal,
+                'shift' => $shift->value,
+                'delay_minutes' => $delayMinutes,
+                'reason' => $reason,
+            ])->delay(now()->addSeconds($staggerOffset));
+        }
+
+        return $quotaShift;
+    }
+
+    /**
+     * Cari shift berikutnya (pagi->sore->malam, hari yang sama) yang masih
+     * punya jadwal dokter, belum dibatalkan, dan kuotanya masih tersedia -
+     * dipakai cancelShiftAndReschedule() untuk geser berantai.
+     */
+    protected function findNextOpenShiftSameDay(string $kodeDokter, string $tanggal, Shift $current): ?Shift
+    {
+        $hari = self::HARI_BY_ISO[Carbon::parse($tanggal)->dayOfWeekIso] ?? null;
+        $order = [Shift::Pagi, Shift::Sore, Shift::Malam];
+        $startIndex = array_search($current, $order, true) + 1;
+
+        for ($i = $startIndex; $i < count($order); $i++) {
+            $candidate = $order[$i];
+
+            $hasSchedule = DoctorSchedule::query()
+                ->where('kode_dokter', $kodeDokter)
+                ->where('shift', $candidate->value)
+                ->where('hari', $hari)
+                ->exists();
+
+            if (! $hasSchedule) {
+                continue;
+            }
+
+            $quota = $this->quota->findQuota($kodeDokter, $tanggal, $candidate);
+
+            // Kalau belum ada baris quota_shifts (di luar jendela sync),
+            // anggap masih longgar - moveBookingToShift() memicu
+            // QuotaService::resolveOrCreateQuota() saat benar-benar dipakai.
+            $blocked = $quota !== null && ($quota->status === 'cancelled' || $quota->kuota_tersisa <= 0);
+
+            if ($blocked) {
+                continue;
+            }
+
+            return $candidate;
+        }
+
+        return null;
+    }
+
+    /**
+     * Pindahkan satu booking ke shift lain pada tanggal yang sama: batalkan
+     * registrasi GTK lama, daftarkan ulang untuk shift baru, tandai booking
+     * lama 'rescheduled' + tautkan ke booking baru. Toleran terhadap
+     * kegagalan GTK per-booking (log + lewati) supaya satu pasien yang
+     * gagal tidak menggagalkan seluruh cascading untuk pasien lain - sama
+     * seperti pola promoteWaitlist().
+     */
+    protected function moveBookingToShift(Booking $booking, string $tanggal, Shift $newShift, ?string $reason): ?Booking
+    {
+        try {
+            $this->callBatalKunjungan($booking, $reason);
+
+            $response = $this->gtk->regPasien([
+                'no_rm' => $booking->no_rm,
+                'kodepoli' => $booking->kode_poliklinik,
+                'kodedokter' => $booking->kode_dokter,
+                'tanggalperiksa' => $tanggal,
+            ]);
+
+            $newBooking = Booking::create([
+                'chat_session_id' => $booking->chat_session_id,
+                'no_rm' => $booking->no_rm,
+                'no_rawat' => $response['no_rawat'] ?? null,
+                'no_reg' => $response['no_reg'] ?? null,
+                'kode_poliklinik' => $booking->kode_poliklinik,
+                'kode_dokter' => $booking->kode_dokter,
+                'tanggal_periksa' => $tanggal,
+                'shift' => $newShift->value,
+                'status' => BookingStatus::Booked->value,
+            ]);
+
+            $this->quota->reserveSlot($booking->kode_dokter, $tanggal, $newShift);
+            $this->quota->releaseSlot($booking->kode_dokter, $booking->tanggal_periksa->toDateString(), $booking->shift);
+
+            $booking->update([
+                'status' => BookingStatus::Rescheduled->value,
+                'cancel_reason' => $reason,
+                'rescheduled_to_booking_id' => $newBooking->id,
+            ]);
+
+            return $newBooking;
+        } catch (\Throwable $e) {
+            Log::warning('Gagal memindahkan booking saat cascading reschedule', [
+                'booking_id' => $booking->id,
+                'target_shift' => $newShift->value,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
     }
 }

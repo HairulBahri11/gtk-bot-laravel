@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AntreanController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\JadwalDokterController;
 use App\Http\Controllers\KuotaController;
 use App\Http\Controllers\MonitoringController;
 use App\Http\Controllers\ProfileController;
@@ -37,6 +38,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
         // Endpoint JSON untuk modal transkrip chat di halaman Antrean - lihat
         // MonitoringController.
         Route::get('/monitoring/{chatSession}', [MonitoringController::class, 'show'])->name('monitoring.show');
+
+        Route::get('/jadwal', [JadwalDokterController::class, 'index'])->name('jadwal.index');
+        Route::post('/jadwal', [JadwalDokterController::class, 'store'])->name('jadwal.store');
+        Route::put('/jadwal/{doctorSchedule}', [JadwalDokterController::class, 'update'])->name('jadwal.update');
+        Route::delete('/jadwal/{doctorSchedule}', [JadwalDokterController::class, 'destroy'])->name('jadwal.destroy');
+        Route::post('/jadwal/cancel-shift', [JadwalDokterController::class, 'cancelShift'])->name('jadwal.cancel-shift');
+        Route::post('/jadwal/delay-shift', [JadwalDokterController::class, 'delayShift'])->name('jadwal.delay-shift');
+        Route::post('/jadwal/reopen-shift', [JadwalDokterController::class, 'reopenShift'])->name('jadwal.reopen-shift');
     });
 
     // Tab utama 3 & 4: belum dibangun - placeholder "Segera Hadir".

@@ -3,8 +3,11 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\ProcessIncomingDoctorMessage;
 use App\Jobs\ProcessIncomingWhatsappMessage;
+use App\Models\Doctor;
 use App\Models\WhatsappMessage;
+use App\Support\IndonesianPhoneNumber;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -54,7 +57,20 @@ class WhatsappWebhookController extends Controller
             return response()->json(['status' => 'duplicate']);
         }
 
-        ProcessIncomingWhatsappMessage::dispatch($chatId, $text);
+        // Bedakan nomor dokter dari calon pasien SEBELUM masuk ke state
+        // machine pasien sama sekali - dokter aktif yang terdaftar di
+        // doctors.no_hp diarahkan ke alur perintah terpisah (batalkan/delay
+        // shift), bukan pernah menyentuh ChatSession/AiEngineService. Nomor
+        // yang tidak cocok tetap diproses seperti sebelumnya, tanpa
+        // perubahan sama sekali.
+        $phone = IndonesianPhoneNumber::fromChatId($chatId);
+        $doctor = $phone ? Doctor::query()->where('no_hp', $phone)->where('is_active', true)->first() : null;
+
+        if ($doctor) {
+            ProcessIncomingDoctorMessage::dispatch($chatId, $text, $doctor->kode_dokter);
+        } else {
+            ProcessIncomingWhatsappMessage::dispatch($chatId, $text);
+        }
 
         return response()->json(['status' => 'queued']);
     }

@@ -38,6 +38,9 @@ class KuotaController extends Controller
                 'kuota_total' => $q->kuota_total,
                 'kuota_terpakai' => $q->kuota_terpakai,
                 'kuota_tersisa' => $q->kuota_tersisa,
+                'status' => $q->status,
+                'delay_minutes' => $q->delay_minutes,
+                'reason' => $q->reason,
                 'last_synced_at' => $q->last_synced_at?->toDateTimeString(),
             ]);
 

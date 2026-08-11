@@ -4,6 +4,7 @@ import { Link } from '@inertiajs/react';
 const subTabs = [
     { name: 'Kuota', route: 'kuota.index', pattern: 'kuota.*' },
     { name: 'Antrean & Monitoring', route: 'antrean.index', pattern: 'antrean.*' },
+    { name: 'Jadwal Dokter', route: 'jadwal.index', pattern: 'jadwal.*' },
 ];
 
 export default function PreLayananLayout({ header, children }) {

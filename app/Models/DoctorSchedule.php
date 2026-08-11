@@ -16,6 +16,7 @@ class DoctorSchedule extends Model
         'jam_selesai',
         'shift',
         'kuota_total',
+        'source',
         'synced_at',
     ];
 

@@ -7,6 +7,28 @@ import { useMemo, useState } from 'react';
 const shiftLabel = { pagi: 'Pagi', sore: 'Sore', malam: 'Malam' };
 const shiftOrder = ['pagi', 'sore', 'malam'];
 
+const statusStyle = {
+    open: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+    delayed: 'bg-amber-50 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+    cancelled: 'bg-red-50 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+};
+
+const statusLabel = { open: 'Buka', delayed: 'Delay', cancelled: 'Dibatalkan' };
+
+function StatusBadge({ status, delayMinutes }) {
+    const label = statusLabel[status] ?? status;
+    const suffix = status === 'delayed' && delayMinutes ? ` +${delayMinutes} mnt` : '';
+
+    return (
+        <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${statusStyle[status] ?? ''}`}
+        >
+            {label}
+            {suffix}
+        </span>
+    );
+}
+
 export default function KuotaIndex({ quotaShifts, filters }) {
     const [tanggal, setTanggal] = useState(filters.tanggal);
     const [syncing, setSyncing] = useState(false);
@@ -104,6 +126,7 @@ export default function KuotaIndex({ quotaShifts, filters }) {
                                         'Poliklinik',
                                         'Dokter',
                                         'Shift',
+                                        'Status',
                                         'Kuota Total',
                                         'Terpakai',
                                         'Tersisa',
@@ -122,7 +145,7 @@ export default function KuotaIndex({ quotaShifts, filters }) {
                                 {quotaShifts.length === 0 && (
                                     <tr>
                                         <td
-                                            colSpan={7}
+                                            colSpan={8}
                                             className="px-4 py-6 text-center text-sm text-gray-500"
                                         >
                                             Tidak ada data kuota untuk
@@ -143,6 +166,12 @@ export default function KuotaIndex({ quotaShifts, filters }) {
                                         </td>
                                         <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
                                             {shiftLabel[q.shift] ?? q.shift}
+                                        </td>
+                                        <td className="px-4 py-3 text-sm">
+                                            <StatusBadge
+                                                status={q.status}
+                                                delayMinutes={q.delay_minutes}
+                                            />
                                         </td>
                                         <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
                                             {q.kuota_total}

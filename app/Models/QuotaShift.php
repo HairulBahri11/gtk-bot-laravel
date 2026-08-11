@@ -15,6 +15,9 @@ class QuotaShift extends Model
         'shift',
         'kuota_total',
         'kuota_terpakai',
+        'status',
+        'delay_minutes',
+        'reason',
         'last_synced_at',
     ];
 

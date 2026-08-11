@@ -33,6 +33,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Shift Change Notification Stagger
+    |--------------------------------------------------------------------------
+    |
+    | Saat dokter membatalkan/menunda shift, notifikasi WA ke tiap pasien
+    | terdampak dikirim satu per satu dengan jeda random (detik) antar
+    | pengiriman supaya tidak kena rate-limit/blokir Meta - lihat
+    | AntreanService::cancelShiftAndReschedule()/delayShiftAndNotify().
+    |
+    */
+    'notification_stagger_min_seconds' => (int) env('GTK_NOTIFY_STAGGER_MIN', 3),
+    'notification_stagger_max_seconds' => (int) env('GTK_NOTIFY_STAGGER_MAX', 15),
+
+    /*
+    |--------------------------------------------------------------------------
     | Reminder Windows
     |--------------------------------------------------------------------------
     */

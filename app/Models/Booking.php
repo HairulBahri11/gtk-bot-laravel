@@ -23,6 +23,7 @@ class Booking extends Model
         'waitlist_position',
         'buffer_shifted_count',
         'cancel_reason',
+        'rescheduled_to_booking_id',
     ];
 
     protected function casts(): array
@@ -57,5 +58,10 @@ class Booking extends Model
     public function reminderLogs(): HasMany
     {
         return $this->hasMany(ReminderLog::class);
+    }
+
+    public function rescheduledTo(): BelongsTo
+    {
+        return $this->belongsTo(Booking::class, 'rescheduled_to_booking_id');
     }
 }
