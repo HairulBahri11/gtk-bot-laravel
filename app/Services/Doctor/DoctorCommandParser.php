@@ -3,7 +3,7 @@
 namespace App\Services\Doctor;
 
 use App\Enums\Shift;
-use Carbon\Carbon;
+use App\Support\IndonesianDateReference;
 use Illuminate\Support\Str;
 
 /**
@@ -16,17 +16,6 @@ use Illuminate\Support\Str;
  */
 class DoctorCommandParser
 {
-    protected const BULAN = [
-        'januari' => 1, 'februari' => 2, 'maret' => 3, 'april' => 4,
-        'mei' => 5, 'juni' => 6, 'juli' => 7, 'agustus' => 8,
-        'september' => 9, 'oktober' => 10, 'november' => 11, 'desember' => 12,
-    ];
-
-    protected const HARI = [
-        'senin' => 1, 'selasa' => 2, 'rabu' => 3, 'kamis' => 4,
-        'jumat' => 5, "jum'at" => 5, 'sabtu' => 6, 'minggu' => 7,
-    ];
-
     /**
      * @return array{action: string, tanggal: string, shift: Shift, delay_minutes: int|null}|null
      */
@@ -92,55 +81,6 @@ class DoctorCommandParser
 
     protected function extractTanggal(string $text): ?string
     {
-        if (str_contains($text, 'hari ini')) {
-            return Carbon::today()->toDateString();
-        }
-
-        if (str_contains($text, 'besok')) {
-            return Carbon::tomorrow()->toDateString();
-        }
-
-        if (preg_match('/\b(\d{4})-(\d{2})-(\d{2})\b/', $text, $m)) {
-            try {
-                return Carbon::createFromDate((int) $m[1], (int) $m[2], (int) $m[3])->toDateString();
-            } catch (\Exception) {
-                return null;
-            }
-        }
-
-        $bulanPattern = implode('|', array_keys(self::BULAN));
-
-        if (preg_match('/\b(\d{1,2})\s+('.$bulanPattern.')(?:\s+(\d{4}))?\b/', $text, $m)) {
-            $day = (int) $m[1];
-            $month = self::BULAN[$m[2]];
-            $year = isset($m[3]) ? (int) $m[3] : Carbon::today()->year;
-
-            try {
-                $date = Carbon::createFromDate($year, $month, $day)->startOfDay();
-            } catch (\Exception) {
-                return null;
-            }
-
-            // Kalau tanggal tanpa tahun eksplisit jatuh di masa lalu (mis.
-            // dokter kirim perintah akhir Desember untuk awal Januari
-            // berikutnya), asumsikan tahun depan - bukan tahun ini yang
-            // sudah lewat.
-            if (! isset($m[3]) && $date->isPast() && ! $date->isToday()) {
-                $date->addYear();
-            }
-
-            return $date->toDateString();
-        }
-
-        foreach (self::HARI as $keyword => $iso) {
-            if (str_contains($text, $keyword)) {
-                $today = Carbon::today();
-                $diff = ($iso - $today->dayOfWeekIso + 7) % 7;
-
-                return $today->copy()->addDays($diff)->toDateString();
-            }
-        }
-
-        return null;
+        return IndonesianDateReference::extract($text);
     }
 }

@@ -19,6 +19,7 @@ use App\Services\Gtk\GtkApiException;
 use App\Services\Gtk\GtkApiService;
 use App\Services\Quota\QuotaService;
 use App\Services\Whatsapp\WhatsAppServiceInterface;
+use App\Support\IndonesianDateReference;
 use App\Support\IndonesianPhoneNumber;
 use Carbon\Carbon;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -167,14 +168,19 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
     /**
      * Jawab pertanyaan jadwal dokter LANGSUNG dari data lokal (doctor_schedules
-     * + status quota_shifts hari ini/besok), tanpa melibatkan AI sama sekali -
-     * lihat catatan di handle(). HANYA mencakup dokter dengan jadwal manual
-     * (source='manual', persis seperti /pre-layanan/jadwal) - dokter yang
-     * hanya punya jadwal hasil sync GTK tetap diproses normal lewat AI
-     * (di luar cakupan fitur ini).
+     * + status quota_shifts), tanpa melibatkan AI sama sekali - lihat catatan
+     * di handle(). HANYA mencakup dokter dengan jadwal manual (source='manual',
+     * persis seperti /pre-layanan/jadwal) - dokter yang hanya punya jadwal
+     * hasil sync GTK tetap diproses normal lewat AI (di luar cakupan fitur ini).
      *
-     * @return string|null null kalau pesan bukan pertanyaan jadwal, atau
-     *                     tidak menyebut dokter manapun yang jadwalnya dikelola manual.
+     * Dua bentuk jawaban: (1) nama dokter disebutkan -> jadwal dokter itu
+     * saja, (2) tidak ada nama dokter tapi pesan jelas menanyakan jadwal
+     * DOKTER (bukan mis. "jadwal kunjungan saya") -> daftar semua dokter
+     * pada tanggal yang dimaksud. Tanggal diekstrak dari teks (hari ini/
+     * besok/nama hari/tanggal eksplisit) - default ke [hari ini, besok]
+     * kalau tidak ada referensi tanggal sama sekali.
+     *
+     * @return string|null null kalau pesan bukan pertanyaan jadwal dokter.
      */
     protected function tryAnswerDoctorScheduleQuestion(string $text): ?string
     {
@@ -185,6 +191,8 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         if (! $looksLikeScheduleQuestion) {
             return null;
         }
+
+        $targetDates = $this->resolveTargetDates($normalized);
 
         $manualDoctors = Doctor::query()
             ->where('is_active', true)
@@ -200,24 +208,65 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             return $nameTokens->contains(fn (string $token) => Str::contains($normalized, $token));
         });
 
-        if (! $matched) {
-            return null;
+        if ($matched) {
+            return $this->buildDoctorScheduleAnswer($matched, $targetDates);
         }
 
-        return $this->buildDoctorScheduleAnswer($matched);
+        if (Str::contains($normalized, 'dokter')) {
+            return $this->buildAllDoctorsScheduleAnswer($targetDates);
+        }
+
+        return null;
     }
 
     /**
-     * Susun jawaban jadwal hari ini & besok untuk SATU dokter (manual saja),
-     * dilapis status harian dari quota_shifts (cancel/delay).
+     * @return array<int, string> tanggal target (yyyy-mm-dd) - satu elemen
+     *                            kalau teks menyebut tanggal spesifik,
+     *                            default [hari ini, besok] kalau tidak ada
+     *                            referensi tanggal sama sekali di teks.
      */
-    protected function buildDoctorScheduleAnswer(Doctor $doctor): string
+    protected function resolveTargetDates(string $normalizedText): array
+    {
+        $explicit = IndonesianDateReference::extract($normalizedText);
+
+        return $explicit !== null
+            ? [$explicit]
+            : [Carbon::today()->toDateString(), Carbon::tomorrow()->toDateString()];
+    }
+
+    /**
+     * "hari ini"/"besok" untuk tanggal yang benar-benar hari ini/besok,
+     * selain itu nama hari + tanggal lengkap - supaya jawaban tetap jelas
+     * walau user menanyakan hari yang lebih jauh (mis. "hari Jumat").
+     */
+    protected function relativeDayLabel(Carbon $date): string
+    {
+        if ($date->isToday()) {
+            return 'hari ini';
+        }
+
+        if ($date->isTomorrow()) {
+            return 'besok';
+        }
+
+        $hariIndo = [1 => 'Senin', 2 => 'Selasa', 3 => 'Rabu', 4 => 'Kamis', 5 => 'Jumat', 6 => 'Sabtu', 7 => 'Minggu'];
+
+        return ($hariIndo[$date->dayOfWeekIso] ?? '').', '.$date->translatedFormat('d F Y');
+    }
+
+    /**
+     * Susun jawaban jadwal untuk SATU dokter (manual saja) pada tanggal-
+     * tanggal target, dilapis status harian dari quota_shifts (cancel/delay).
+     *
+     * @param  array<int, string>  $targetDates
+     */
+    protected function buildDoctorScheduleAnswer(Doctor $doctor, array $targetDates): string
     {
         $shiftLabel = ['pagi' => 'Pagi', 'sore' => 'Sore', 'malam' => 'Malam'];
-        $dayLabels = ['hari ini', 'besok'];
         $lines = [];
 
-        foreach ([Carbon::today(), Carbon::tomorrow()] as $i => $date) {
+        foreach ($targetDates as $tanggal) {
+            $date = Carbon::parse($tanggal);
             $hari = self::HARI_BY_ISO[$date->dayOfWeekIso] ?? null;
 
             if (! $hari) {
@@ -238,9 +287,11 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
             $statuses = QuotaShift::query()
                 ->where('kode_dokter', $doctor->kode_dokter)
-                ->whereDate('tanggal', $date->toDateString())
+                ->whereDate('tanggal', $tanggal)
                 ->get()
                 ->keyBy(fn (QuotaShift $q) => $q->shift->value);
+
+            $dayLabel = $this->relativeDayLabel($date);
 
             foreach ($schedules as $schedule) {
                 $status = $statuses[$schedule->shift->value] ?? null;
@@ -253,16 +304,91 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
                     default => '',
                 };
 
-                $lines[] = "{$dayLabels[$i]} shift {$shiftText} pukul {$jam}{$statusText}, di {$schedule->poliklinik?->nama_poliklinik}";
+                $lines[] = "{$dayLabel} shift {$shiftText} pukul {$jam}{$statusText}, di {$schedule->poliklinik?->nama_poliklinik}";
             }
         }
 
         if (empty($lines)) {
-            return "Mohon maaf, {$doctor->nama_dokter} tidak memiliki jadwal praktik untuk hari ini maupun besok. "
+            $periode = count($targetDates) > 1 ? 'hari ini maupun besok' : 'tanggal yang ditanyakan';
+
+            return "Mohon maaf, {$doctor->nama_dokter} tidak memiliki jadwal praktik untuk {$periode}. "
                 .'Silakan tanyakan tanggal lain atau hubungi kami untuk info lebih lanjut.';
         }
 
         return "Jadwal praktik {$doctor->nama_dokter}: ".implode('; ', $lines).'.';
+    }
+
+    /**
+     * Susun jawaban daftar SEMUA dokter (manual saja) pada tanggal-tanggal
+     * target - dipakai saat pesan menanyakan jadwal dokter tanpa menyebut
+     * nama dokter tertentu (mis. "jadwal dokter besok").
+     *
+     * @param  array<int, string>  $targetDates
+     */
+    protected function buildAllDoctorsScheduleAnswer(array $targetDates): string
+    {
+        $shiftLabel = ['pagi' => 'Pagi', 'sore' => 'Sore', 'malam' => 'Malam'];
+        $sections = [];
+
+        foreach ($targetDates as $tanggal) {
+            $date = Carbon::parse($tanggal);
+            $hari = self::HARI_BY_ISO[$date->dayOfWeekIso] ?? null;
+
+            if (! $hari) {
+                continue;
+            }
+
+            $schedules = DoctorSchedule::query()
+                ->with(['doctor', 'poliklinik'])
+                ->where('hari', $hari)
+                ->where('source', 'manual')
+                ->whereHas('doctor', fn ($q) => $q->where('is_active', true))
+                ->orderBy('jam_mulai')
+                ->get();
+
+            if ($schedules->isEmpty()) {
+                continue;
+            }
+
+            $statuses = QuotaShift::query()
+                ->whereDate('tanggal', $tanggal)
+                ->get()
+                ->keyBy(fn (QuotaShift $q) => $q->kode_dokter.'|'.$q->shift->value);
+
+            // Kelompokkan per dokter supaya satu dokter dengan beberapa shift
+            // di hari yang sama tampil sebagai satu baris ringkas, bukan
+            // diulang per shift.
+            $doctorLines = $schedules->groupBy('kode_dokter')->map(function ($doctorSchedules) use ($statuses, $shiftLabel) {
+                $first = $doctorSchedules->first();
+                $namaDokter = $first->doctor?->nama_dokter ?? $first->kode_dokter;
+                $namaPoli = $first->poliklinik?->nama_poliklinik;
+
+                $shiftParts = $doctorSchedules->map(function (DoctorSchedule $s) use ($statuses, $shiftLabel) {
+                    $status = $statuses[$s->kode_dokter.'|'.$s->shift->value] ?? null;
+                    $jam = substr($s->jam_mulai, 0, 5).'-'.substr($s->jam_selesai, 0, 5);
+                    $shiftText = $shiftLabel[$s->shift->value] ?? $s->shift->value;
+
+                    $statusText = match ($status?->status) {
+                        'cancelled' => ' (DIBATALKAN)',
+                        'delayed' => ' (delay '.$status->delay_minutes.' menit)',
+                        default => '',
+                    };
+
+                    return "{$shiftText} {$jam}{$statusText}";
+                })->implode(', ');
+
+                return "- {$namaDokter} ({$namaPoli}): {$shiftParts}";
+            })->values();
+
+            $dayLabel = $this->relativeDayLabel($date);
+            $sections[] = "Jadwal dokter {$dayLabel} ({$date->translatedFormat('d F Y')}):\n".$doctorLines->implode("\n");
+        }
+
+        if (empty($sections)) {
+            return 'Mohon maaf, tidak ada jadwal dokter tercatat untuk tanggal yang ditanyakan. Silakan hubungi kami untuk info lebih lanjut.';
+        }
+
+        return implode("\n\n", $sections);
     }
 
     /**

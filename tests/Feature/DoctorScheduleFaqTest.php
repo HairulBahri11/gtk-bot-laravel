@@ -107,6 +107,94 @@ class DoctorScheduleFaqTest extends TestCase
     }
 
     /**
+     * Kejadian nyata: "jadwal dokter untuk besok" (tanpa sebut nama dokter)
+     * harus menampilkan SEMUA dokter yang praktik besok, bukan diam-diam
+     * jatuh ke AI (yang sebelumnya kadang menjawab benar kadang tidak).
+     */
+    public function test_schedule_question_without_doctor_name_lists_all_doctors_for_the_day(): void
+    {
+        $poli = Poliklinik::create(['kode_poliklinik' => '01', 'nama_poliklinik' => 'Poli Spesialis Anak', 'is_active' => true]);
+        Doctor::create(['kode_dokter' => 'MANUAL-RETNO', 'nama_dokter' => 'dr. Retno Wulandari, Sp.A', 'kode_poliklinik' => $poli->kode_poliklinik, 'is_active' => true]);
+        Doctor::create(['kode_dokter' => 'MANUAL-KADEK', 'nama_dokter' => 'dr. Kadek Ayu Atrie Swarita, Sp.A', 'kode_poliklinik' => $poli->kode_poliklinik, 'is_active' => true]);
+
+        $besok = $this->hariFor(now()->addDay());
+
+        DoctorSchedule::create([
+            'kode_dokter' => 'MANUAL-RETNO', 'kode_poliklinik' => $poli->kode_poliklinik,
+            'hari' => $besok, 'jam_mulai' => '08:00', 'jam_selesai' => '09:30',
+            'shift' => 'pagi', 'kuota_total' => 15, 'source' => 'manual',
+        ]);
+        DoctorSchedule::create([
+            'kode_dokter' => 'MANUAL-KADEK', 'kode_poliklinik' => $poli->kode_poliklinik,
+            'hari' => $besok, 'jam_mulai' => '09:30', 'jam_selesai' => '11:00',
+            'shift' => 'pagi', 'kuota_total' => 15, 'source' => 'manual',
+        ]);
+
+        $fakeWa = new FakeScheduleFaqWhatsAppService;
+        $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
+        Http::preventStrayRequests();
+
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => ['from' => $this->chatId, 'fromMe' => false, 'body' => 'jadwal dokter untuk besok'],
+        ])->assertOk();
+
+        $message = $fakeWa->sent[0]['message'];
+        $this->assertStringContainsString('dr. Retno Wulandari, Sp.A', $message);
+        $this->assertStringContainsString('08:00-09:30', $message);
+        $this->assertStringContainsString('dr. Kadek Ayu Atrie Swarita, Sp.A', $message);
+        $this->assertStringContainsString('09:30-11:00', $message);
+    }
+
+    /**
+     * Kejadian nyata: "jadwal dokter retno hari jumat" menjawab jadwal
+     * HARI INI+BESOK (Rabu/Kamis, termasuk shift Sore & Malam yang cuma ada
+     * di Kamis) alih-alih jadwal Jumat yang sebenarnya ditanya (cuma shift
+     * Pagi). Bug-nya: tanggal target tidak pernah diekstrak dari teks sama
+     * sekali - selalu hardcode hari ini+besok. Reproduksi persis skenario
+     * dashboard: Retno praktik Rabu/Kamis(3 shift)/Jumat(1 shift)/Sabtu.
+     */
+    public function test_named_doctor_with_specific_weekday_returns_only_that_days_schedule(): void
+    {
+        $poli = Poliklinik::create(['kode_poliklinik' => '01', 'nama_poliklinik' => 'Poli Spesialis Anak', 'is_active' => true]);
+        Doctor::create(['kode_dokter' => 'MANUAL-RETNO', 'nama_dokter' => 'dr. Retno Wulandari, Sp.A', 'kode_poliklinik' => $poli->kode_poliklinik, 'is_active' => true]);
+
+        // Jadwal Kamis (3 shift, sengaja beda dari Jumat) - kalau bug masih
+        // ada, ini yang bocor muncul di jawaban meski yang ditanya Jumat.
+        foreach ([['pagi', '08:00', '09:30'], ['sore', '15:30', '17:00'], ['malam', '18:30', '20:00']] as [$shift, $mulai, $selesai]) {
+            DoctorSchedule::create([
+                'kode_dokter' => 'MANUAL-RETNO', 'kode_poliklinik' => $poli->kode_poliklinik,
+                'hari' => 'KAMIS', 'jam_mulai' => $mulai, 'jam_selesai' => $selesai,
+                'shift' => $shift, 'kuota_total' => 15, 'source' => 'manual',
+            ]);
+        }
+
+        // Jadwal Jumat (1 shift saja) - ini yang HARUS jadi satu-satunya isi
+        // jawaban.
+        DoctorSchedule::create([
+            'kode_dokter' => 'MANUAL-RETNO', 'kode_poliklinik' => $poli->kode_poliklinik,
+            'hari' => 'JUMAT', 'jam_mulai' => '08:00', 'jam_selesai' => '09:30',
+            'shift' => 'pagi', 'kuota_total' => 15, 'source' => 'manual',
+        ]);
+
+        $fakeWa = new FakeScheduleFaqWhatsAppService;
+        $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
+        Http::preventStrayRequests();
+
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => ['from' => $this->chatId, 'fromMe' => false, 'body' => 'jadwal dokter retno hari jumat'],
+        ])->assertOk();
+
+        $message = $fakeWa->sent[0]['message'];
+        $this->assertStringContainsString('08:00-09:30', $message);
+        // Jam yang HANYA ada di jadwal Kamis - tidak boleh bocor ke jawaban
+        // untuk pertanyaan hari Jumat.
+        $this->assertStringNotContainsString('15:30-17:00', $message);
+        $this->assertStringNotContainsString('18:30-20:00', $message);
+    }
+
+    /**
      * Regresi: pesan biasa yang kebetulan mengandung kata "jadwal" tapi
      * TIDAK menyebut nama dokter manapun harus tetap masuk alur AI normal
      * seperti biasa (mis. user menjawab pertanyaan booking terkait jadwal
