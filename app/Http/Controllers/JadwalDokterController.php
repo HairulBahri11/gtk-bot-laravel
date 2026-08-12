@@ -40,6 +40,15 @@ class JadwalDokterController extends Controller
 
         $kodeDokterList = $schedules->pluck('kode_dokter')->unique()->values();
 
+        // Master dokter buat dropdown "Kode Dokter" di form tambah jadwal -
+        // dokter cuma boleh pilih dirinya sendiri, admin boleh pilih semua
+        // dokter aktif.
+        $doctors = Doctor::query()
+            ->where('is_active', true)
+            ->when($user->isDokter(), fn ($q) => $q->where('kode_dokter', $user->kode_dokter))
+            ->orderBy('nama_dokter')
+            ->get(['kode_dokter', 'nama_dokter']);
+
         $statuses = QuotaShift::query()
             ->whereIn('kode_dokter', $kodeDokterList)
             ->whereDate('tanggal', $tanggal)
@@ -67,6 +76,10 @@ class JadwalDokterController extends Controller
                 'kuota_total' => $s->kuota_total,
             ]),
             'statuses' => $statuses,
+            'doctors' => $doctors->map(fn (Doctor $d) => [
+                'kode_dokter' => $d->kode_dokter,
+                'nama_dokter' => $d->nama_dokter,
+            ]),
             'filters' => ['tanggal' => $tanggal],
             'isDokter' => $user->isDokter(),
         ]);

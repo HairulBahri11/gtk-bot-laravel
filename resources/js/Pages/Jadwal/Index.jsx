@@ -129,11 +129,11 @@ function ShiftStatusCard({ combo, statusRow, tanggal, isDokter }) {
     );
 }
 
-export default function JadwalIndex({ schedules, statuses, filters, isDokter }) {
+export default function JadwalIndex({ schedules, statuses, doctors, filters, isDokter }) {
     const [tanggal, setTanggal] = useState(filters.tanggal);
 
     const { data, setData, post, processing, reset, errors } = useForm({
-        kode_dokter: schedules[0]?.kode_dokter ?? '',
+        kode_dokter: doctors[0]?.kode_dokter ?? schedules[0]?.kode_dokter ?? '',
         hari: 'SENIN',
         jam_mulai: '08:00',
         jam_selesai: '09:30',
@@ -272,19 +272,32 @@ export default function JadwalIndex({ schedules, statuses, filters, isDokter }) 
                                     className="mt-1 w-full"
                                 />
                             </div>
-                            <div className="w-40">
+                            <div className="w-56">
                                 <InputLabel value="Kode Dokter" />
-                                <TextInput
+                                <select
                                     value={data.kode_dokter}
                                     onChange={(e) => setData('kode_dokter', e.target.value)}
-                                    className="mt-1 w-full"
-                                    placeholder="mis. MANUAL-RETNO"
-                                />
+                                    className="mt-1 w-full rounded-lg border-gray-300 text-sm shadow-sm focus:border-[#2a78d6] focus:ring-[#2a78d6] dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                                >
+                                    <option value="" disabled>
+                                        Pilih dokter
+                                    </option>
+                                    {doctors.map((d) => (
+                                        <option key={d.kode_dokter} value={d.kode_dokter}>
+                                            {d.nama_dokter} ({d.kode_dokter})
+                                        </option>
+                                    ))}
+                                </select>
                             </div>
-                            <PrimaryButton type="submit" disabled={processing}>
+                            <PrimaryButton type="submit" disabled={processing || doctors.length === 0}>
                                 Tambah
                             </PrimaryButton>
                         </form>
+                        {doctors.length === 0 && (
+                            <p className="mt-2 text-sm text-amber-600">
+                                Belum ada data dokter aktif di master dokter - sync dulu lewat halaman Kuota.
+                            </p>
+                        )}
                         {Object.keys(errors).length > 0 && (
                             <p className="mt-2 text-sm text-red-600">
                                 Periksa kembali isian - ada data yang tidak valid.
