@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Enums\Shift;
 use App\Models\Doctor;
 use App\Models\DoctorSchedule;
+use App\Models\Poliklinik;
 use App\Models\QuotaShift;
 use App\Models\User;
 use App\Services\Antrean\AntreanService;
@@ -42,16 +43,20 @@ class JadwalDokterController extends Controller
 
         // Master dokter buat dropdown "Kode Dokter" di form tambah jadwal -
         // dokter cuma boleh pilih dirinya sendiri, admin boleh pilih semua
-        // dokter aktif. whereNotNull('kode_poliklinik') karena sync GTK bisa
-        // menyimpan dokter tanpa poliklinik (lihat QuotaService::syncDoctors) -
-        // dokter seperti itu tidak bisa dipakai bikin jadwal manual sama sekali
-        // (doctor_schedules.kode_poliklinik NOT NULL).
+        // dokter aktif. Poliklinik dokter TIDAK dipakai otomatis di sini
+        // (bisa kosong kalau sync GTK belum/tidak mengembalikannya) - admin
+        // pilih poliklinik sendiri lewat dropdown terpisah di form, jadwal &
+        // kuota dikelola manual dari dashboard, tidak bergantung data GTK.
         $doctors = Doctor::query()
             ->where('is_active', true)
-            ->whereNotNull('kode_poliklinik')
             ->when($user->isDokter(), fn ($q) => $q->where('kode_dokter', $user->kode_dokter))
             ->orderBy('nama_dokter')
             ->get(['kode_dokter', 'nama_dokter']);
+
+        $poliklinik = Poliklinik::query()
+            ->where('is_active', true)
+            ->orderBy('nama_poliklinik')
+            ->get(['kode_poliklinik', 'nama_poliklinik']);
 
         $statuses = QuotaShift::query()
             ->whereIn('kode_dokter', $kodeDokterList)
@@ -84,6 +89,10 @@ class JadwalDokterController extends Controller
                 'kode_dokter' => $d->kode_dokter,
                 'nama_dokter' => $d->nama_dokter,
             ]),
+            'poliklinik' => $poliklinik->map(fn (Poliklinik $p) => [
+                'kode_poliklinik' => $p->kode_poliklinik,
+                'nama_poliklinik' => $p->nama_poliklinik,
+            ]),
             'filters' => ['tanggal' => $tanggal],
             'isDokter' => $user->isDokter(),
         ]);
@@ -93,6 +102,7 @@ class JadwalDokterController extends Controller
     {
         $data = $request->validate([
             'kode_dokter' => ['required', 'string', Rule::exists('doctors', 'kode_dokter')],
+            'kode_poliklinik' => ['required', 'string', Rule::exists('poliklinik', 'kode_poliklinik')],
             'hari' => ['required', Rule::in(['SENIN', 'SELASA', 'RABU', 'KAMIS', 'JUMAT', 'SABTU', 'MINGGU'])],
             'jam_mulai' => ['required', 'date_format:H:i'],
             'jam_selesai' => ['required', 'date_format:H:i', 'after:jam_mulai'],
@@ -103,17 +113,13 @@ class JadwalDokterController extends Controller
 
         $doctor = Doctor::query()->findOrFail($data['kode_dokter']);
 
-        // Jaring pengaman - dropdown di frontend sudah menyaring dokter tanpa
-        // poliklinik, tapi tetap divalidasi di sini (mis. data berubah antara
-        // load halaman & submit) supaya errornya jelas, bukan QueryException
-        // NOT NULL constraint mentah dari Postgres.
-        if (! $doctor->kode_poliklinik) {
-            return back()->with('error', "Dokter {$doctor->nama_dokter} belum punya poliklinik di master data - lengkapi dulu sebelum bisa dibuatkan jadwal manual.");
-        }
-
         DoctorSchedule::query()->create([
             'kode_dokter' => $doctor->kode_dokter,
-            'kode_poliklinik' => $doctor->kode_poliklinik,
+            // Poliklinik dipilih eksplisit dari form (bukan diturunkan dari
+            // Doctor::kode_poliklinik) - sync GTK kadang tidak mengembalikan
+            // poliklinik dokter, jadwal manual harus tetap bisa dibuat lepas
+            // dari lengkap/tidaknya data itu.
+            'kode_poliklinik' => $data['kode_poliklinik'],
             'hari' => $data['hari'],
             'jam_mulai' => $data['jam_mulai'],
             'jam_selesai' => $data['jam_selesai'],

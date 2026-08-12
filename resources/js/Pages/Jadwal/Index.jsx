@@ -129,11 +129,12 @@ function ShiftStatusCard({ combo, statusRow, tanggal, isDokter }) {
     );
 }
 
-export default function JadwalIndex({ schedules, statuses, doctors, filters, isDokter }) {
+export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, filters, isDokter }) {
     const [tanggal, setTanggal] = useState(filters.tanggal);
 
     const { data, setData, post, processing, reset, errors } = useForm({
         kode_dokter: doctors[0]?.kode_dokter ?? schedules[0]?.kode_dokter ?? '',
+        kode_poliklinik: poliklinik[0]?.kode_poliklinik ?? '',
         hari: 'SENIN',
         jam_mulai: '08:00',
         jam_selesai: '09:30',
@@ -289,13 +290,38 @@ export default function JadwalIndex({ schedules, statuses, doctors, filters, isD
                                     ))}
                                 </select>
                             </div>
-                            <PrimaryButton type="submit" disabled={processing || doctors.length === 0}>
+                            <div className="w-56">
+                                <InputLabel value="Poliklinik" />
+                                <select
+                                    value={data.kode_poliklinik}
+                                    onChange={(e) => setData('kode_poliklinik', e.target.value)}
+                                    className="mt-1 w-full rounded-lg border-gray-300 text-sm shadow-sm focus:border-[#2a78d6] focus:ring-[#2a78d6] dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                                >
+                                    <option value="" disabled>
+                                        Pilih poliklinik
+                                    </option>
+                                    {poliklinik.map((p) => (
+                                        <option key={p.kode_poliklinik} value={p.kode_poliklinik}>
+                                            {p.nama_poliklinik}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <PrimaryButton
+                                type="submit"
+                                disabled={processing || doctors.length === 0 || poliklinik.length === 0}
+                            >
                                 Tambah
                             </PrimaryButton>
                         </form>
                         {doctors.length === 0 && (
                             <p className="mt-2 text-sm text-amber-600">
-                                Belum ada data dokter aktif di master dokter - sync dulu lewat halaman Kuota.
+                                Belum ada data dokter aktif di master dokter.
+                            </p>
+                        )}
+                        {poliklinik.length === 0 && (
+                            <p className="mt-2 text-sm text-amber-600">
+                                Belum ada data poliklinik aktif.
                             </p>
                         )}
                         {Object.keys(errors).length > 0 && (
