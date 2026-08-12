@@ -8,6 +8,7 @@ use App\Models\Booking;
 use App\Models\ChatSession;
 use App\Models\Doctor;
 use App\Models\DoctorSchedule;
+use App\Models\Patient;
 use App\Models\Poliklinik;
 use App\Models\QuotaShift;
 use App\Models\WhatsappMessage;
@@ -294,6 +295,264 @@ class WhatsappWebhookTest extends TestCase
         Http::assertSentCount(1);
     }
 
+    /**
+     * Skenario akar masalah yang dilaporkan: orang tua mengetik "Budi",
+     * tapi data GTK tercatat "Budy" (typo/ejaan beda) - tanggal lahir &
+     * nama ibu kandung sama persis. Sistem WAJIB menawarkan konfirmasi
+     * (bukan langsung membuat pasien baru, ATAU langsung memakai kandidat
+     * itu diam-diam), lalu begitu dikonfirmasi, booking harus jatuh ke
+     * no_rm pasien yang SUDAH ADA - tidak boleh ada rekam medis duplikat.
+     */
+    public function test_probable_name_match_asks_confirmation_then_reuses_existing_no_rm(): void
+    {
+        $this->seedMasterData();
+
+        $fakeWa = new FakeWhatsAppService;
+        $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
+
+        Http::fake([
+            // handleStateTwo() butuh tanggal_kunjungan_dijawab sudah true
+            // pada giliran SEBELUMNYA sebelum konfirmasi dihormati, DAN slot
+            // yang sama harus sudah pernah ditawarkan sebelum booking benar-
+            // benar dibuat (lihat slot_ditawarkan) - jadi perlu 3 giliran
+            // STATE_2 (bukan cuma 1) untuk sampai ke booking sungguhan,
+            // persis seperti pola yang sama juga berlaku di
+            // test_full_registration_and_booking_flow.
+            'openrouter.ai/*' => Http::sequence()
+                ->push($this->openRouterResponse($this->stateOneAiContent(['nama' => 'Budi'])), 200)
+                ->push($this->openRouterResponse($this->confirmationAiContent()), 200)
+                ->push($this->openRouterResponse($this->stateTwoAiContent()), 200)
+                ->push($this->openRouterResponse($this->confirmationAiContent()), 200)
+                ->push($this->openRouterResponse($this->confirmationAiContent()), 200),
+            '*url=auth*' => Http::response($this->gtkOk(['token' => 'test-token']), 200),
+            '*url=caripasien*' => Http::response($this->gtkOk([
+                'list' => [[
+                    'no_rm' => '000050',
+                    'nama' => 'Budy',
+                    'jeniskelamin' => 'L',
+                    'tanggallahir' => '2021-01-01',
+                    'namaibu' => 'Sari',
+                    'nohp' => '081234567890',
+                ]],
+            ]), 200),
+            '*url=regpasien*' => Http::response($this->gtkOk(['no_rawat' => '2026/07/20/000001', 'no_reg' => '1'], 'Registrasi berhasil'), 200),
+        ]);
+
+        // Giliran 1: nama tidak exact match ("Budi" vs data GTK "Budy"),
+        // tapi tanggal lahir & nama ibu sama - harus berhenti di pertanyaan
+        // konfirmasi, BELUM pindah state & BELUM ada no_rm.
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Anak saya Budi, lahir 2021-01-01, ibu Sari, keluhan demam, laki-laki',
+            ],
+        ])->assertOk();
+
+        $session = ChatSession::query()->where('chat_id', $this->chatId)->firstOrFail();
+        $this->assertSame(ChatState::PengumpulanData, $session->state);
+        $this->assertNull($session->no_rm);
+        $this->assertSame('000050', $session->context['pasien_ditawarkan'] ?? null);
+        $this->assertCount(1, $fakeWa->sent);
+        $this->assertStringContainsString('Budy', $fakeWa->sent[0]['message']);
+
+        // Giliran 2: user konfirmasi "ya" - WAJIB memakai no_rm yang SUDAH
+        // ADA (000050), bukan mendaftarkan pasien baru.
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Ya, benar',
+            ],
+        ])->assertOk();
+
+        $session->refresh();
+        $this->assertSame(ChatState::Konfirmasi, $session->state);
+        $this->assertSame('000050', $session->no_rm);
+        $this->assertArrayNotHasKey('pasien_ditawarkan', $session->context);
+        Http::assertNotSent(fn ($request) => str_contains((string) $request->url(), 'tambahpasien'));
+
+        // Tidak ada duplikat Patient yang tercipta di titik ini - inilah inti
+        // masalah yang dilaporkan (typo nama -> pasien lama dianggap tidak
+        // ada -> rekam medis baru dibuat diam-diam).
+        $this->assertSame(1, Patient::query()->count());
+
+        // Giliran 3-5: lanjutkan alur booking STATE_2 normal (poli+shift+
+        // tanggal, lalu dua giliran konfirmasi - lihat catatan Http::fake()
+        // di atas) - harus jatuh ke no_rm pasien LAMA, bukan pasien baru.
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Tumbuh Kembang Anak, shift pagi, secepatnya',
+            ],
+        ])->assertOk();
+
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Ya, setuju',
+            ],
+        ])->assertOk();
+
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Ya, benar',
+            ],
+        ])->assertOk();
+
+        $booking = Booking::query()->where('no_rm', '000050')->firstOrFail();
+        $this->assertSame(BookingStatus::Booked, $booking->status);
+        $this->assertSame(1, Patient::query()->count());
+    }
+
+    /**
+     * Sama seperti test di atas, TAPI kandidatnya HANYA ada di cache lokal
+     * `patients` (mis. pasien pernah booking lewat bot ini sebelumnya) -
+     * pencarian nama di sisi GTK sendiri gagal total (404). Ini satu-
+     * satunya jalur yang membuktikan fallback cache lokal benar-benar
+     * terpakai, bukan cuma kode mati.
+     */
+    public function test_probable_match_sourced_from_local_cache_when_gtk_search_fails(): void
+    {
+        $this->seedMasterData();
+
+        Patient::create([
+            'no_rm' => '000077',
+            'nama' => 'Budy',
+            'jk' => 'LAKI-LAKI',
+            'tanggal_lahir' => '2021-01-01',
+            'nama_ibu_kandung' => 'Sari',
+            'no_hp' => '081234567890',
+            'last_synced_at' => now(),
+        ]);
+
+        $fakeWa = new FakeWhatsAppService;
+        $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
+
+        Http::fake([
+            'openrouter.ai/*' => Http::sequence()
+                ->push($this->openRouterResponse($this->stateOneAiContent(['nama' => 'Budi'])), 200)
+                ->push($this->openRouterResponse($this->confirmationAiContent()), 200),
+            '*url=auth*' => Http::response($this->gtkOk(['token' => 'test-token']), 200),
+            '*url=caripasien*' => Http::response($this->gtkFail('Data tidak ditemukan', 404), 200),
+        ]);
+
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Anak saya Budi, lahir 2021-01-01, ibu Sari, keluhan demam, laki-laki',
+            ],
+        ])->assertOk();
+
+        $session = ChatSession::query()->where('chat_id', $this->chatId)->firstOrFail();
+        $this->assertSame('000077', $session->context['pasien_ditawarkan'] ?? null);
+
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Ya, benar',
+            ],
+        ])->assertOk();
+
+        $session->refresh();
+        $this->assertSame('000077', $session->no_rm);
+        Http::assertNotSent(fn ($request) => str_contains((string) $request->url(), 'tambahpasien'));
+        $this->assertSame(1, Patient::query()->count());
+    }
+
+    /**
+     * resetIfDifferentPatient() sebelumnya SAMA SEKALI tidak punya test
+     * coverage. Dua hal yang WAJIB dibuktikan sekaligus: (1) variasi
+     * spasi/kapitalisasi semata TIDAK memicu reset sesi (ini micro-bug
+     * yang ikut kebetulan diperbaiki oleh fix fuzzy-match - dulu trim()
+     * saja tidak merapikan spasi ganda di tengah nama), (2) nama YANG
+     * BENAR-BENAR berbeda (bukan typo) TETAP memicu reset total - fuzzy
+     * matching di sini tidak boleh dilonggarkan sampai kehilangan
+     * kemampuan mendeteksi pergantian pasien yang sungguhan.
+     */
+    public function test_reset_if_different_patient_tolerates_spacing_but_resets_on_different_child(): void
+    {
+        $this->seedMasterData();
+
+        $fakeWa = new FakeWhatsAppService;
+        $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
+
+        Http::fake([
+            'openrouter.ai/*' => Http::sequence()
+                ->push($this->openRouterResponse($this->stateOneAiContent(['nama' => 'Budi Santoso'])), 200)
+                ->push($this->openRouterResponse(json_encode([
+                    'reply' => 'Baik.',
+                    'extracted' => ['nama' => 'BUDI   SANTOSO', 'tanggal_lahir' => '2021-01-01'],
+                    'ready_for_next_state' => false,
+                ])), 200)
+                ->push($this->openRouterResponse(json_encode([
+                    'reply' => 'Baik, siapa namanya?',
+                    'extracted' => ['nama' => 'Siti Aminah', 'tanggal_lahir' => '2019-03-03'],
+                    'ready_for_next_state' => false,
+                ])), 200),
+            '*url=auth*' => Http::response($this->gtkOk(['token' => 'test-token']), 200),
+            '*url=caripasien*' => Http::response($this->gtkFail('Data tidak ditemukan', 404), 200),
+            '*url=tambahpasien*' => Http::response($this->gtkOk(['no_rkm_medis' => '000099'], 'Pasien baru berhasil didaftarkan'), 200),
+        ]);
+
+        // Giliran 1: pasien baru terdaftar seperti biasa.
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Anak saya Budi Santoso, lahir 2021-01-01, ibu Sari, keluhan demam, laki-laki',
+            ],
+        ])->assertOk();
+
+        $session = ChatSession::query()->where('chat_id', $this->chatId)->firstOrFail();
+        $this->assertSame('000099', $session->no_rm);
+        $this->assertSame(ChatState::Konfirmasi, $session->state);
+
+        // Giliran 2: cuma variasi KAPITALISASI + spasi ganda, tanggal lahir
+        // sama persis - BUKAN pasien lain, sesi & no_rm harus tetap utuh.
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'namanya BUDI   SANTOSO',
+            ],
+        ])->assertOk();
+
+        $session->refresh();
+        $this->assertSame('000099', $session->no_rm);
+        $this->assertSame(ChatState::Konfirmasi, $session->state);
+
+        // Giliran 3: nama & tanggal lahir BENAR-BENAR berbeda - ini pasien
+        // lain, sesi WAJIB direset total (no_rm dilepas, balik ke STATE_1).
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Eh maaf, mau daftarkan anak lain, Siti Aminah lahir 2019-03-03',
+            ],
+        ])->assertOk();
+
+        $session->refresh();
+        $this->assertNull($session->no_rm);
+        $this->assertSame(ChatState::PengumpulanData, $session->state);
+    }
+
     protected function seedMasterData(): void
     {
         $poli = Poliklinik::create([
@@ -335,11 +594,11 @@ class WhatsappWebhookTest extends TestCase
         ]);
     }
 
-    protected function stateOneAiContent(): string
+    protected function stateOneAiContent(array $extractedOverrides = []): string
     {
         return json_encode([
             'reply' => 'Baik, data sudah lengkap. Silakan pilih poliklinik dan shift.',
-            'extracted' => [
+            'extracted' => array_merge([
                 'nama' => 'Budi',
                 'tanggal_lahir' => '2021-01-01',
                 'nama_ibu_kandung' => 'Sari',
@@ -349,7 +608,22 @@ class WhatsappWebhookTest extends TestCase
                 'keluhan' => 'Demam',
                 'poli_pilihan' => 'Tumbuh Kembang Anak',
                 'poli_disetujui' => true,
-            ],
+            ], $extractedOverrides),
+            'ready_for_next_state' => true,
+        ]);
+    }
+
+    /**
+     * Simulasi giliran user menjawab pertanyaan konfirmasi (baik konfirmasi
+     * kecocokan pasien di STATE_1 maupun konfirmasi jadwal di STATE_2) -
+     * "extracted" sengaja minimal (cuma "konfirmasi") karena field lain
+     * sudah tersimpan di context dari giliran-giliran sebelumnya.
+     */
+    protected function confirmationAiContent(bool $confirmed = true, string $reply = 'Baik, terima kasih konfirmasinya.'): string
+    {
+        return json_encode([
+            'reply' => $reply,
+            'extracted' => ['konfirmasi' => $confirmed],
             'ready_for_next_state' => true,
         ]);
     }

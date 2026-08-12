@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Enums\BookingStatus;
 use App\Enums\ChatState;
+use App\Enums\PatientMatchVerdict;
 use App\Enums\Shift;
 use App\Models\ChatSession;
 use App\Models\Doctor;
@@ -17,16 +18,19 @@ use App\Services\Ai\AiEngineService;
 use App\Services\Antrean\AntreanService;
 use App\Services\Gtk\GtkApiException;
 use App\Services\Gtk\GtkApiService;
+use App\Services\Patient\PatientMatcher;
 use App\Services\Quota\QuotaService;
 use App\Services\Whatsapp\WhatsAppServiceInterface;
 use App\Support\IndonesianDateReference;
 use App\Support\IndonesianPhoneNumber;
+use App\Support\NameSimilarity;
 use Carbon\Carbon;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -67,6 +71,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         AntreanService $antrean,
         QuotaService $quota,
         WhatsAppServiceInterface $wa,
+        PatientMatcher $matcher,
     ): void {
         $session = ChatSession::firstOrCreate(
             ['chat_id' => $this->chatId],
@@ -114,7 +119,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
         try {
             $reply = match ($session->state) {
-                ChatState::PengumpulanData => $this->handleStateOne($session, $result, $gtk),
+                ChatState::PengumpulanData => $this->handleStateOne($session, $result, $gtk, $matcher),
                 ChatState::Konfirmasi => $this->handleStateTwo($session, $result, $antrean, $quota, $tanggalSudahDijawabSebelumnya),
                 ChatState::Done => $this->handleStateThree($session, $result, $antrean),
             };
@@ -428,6 +433,19 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
      * diisi lewat resolvePatient() di STATE_1, jadi begitu nama+tanggal_lahir
      * baru terdeteksi berbeda dari yang tersimpan, sesi WAJIB direset total
      * supaya booking berikutnya tidak nyasar ke identitas pasien lama.
+     *
+     * Perbandingan nama sengaja memakai kemiripan fuzzy (NameSimilarity),
+     * BUKAN exact match lagi - kalau masih exact match, koreksi ejaan kecil
+     * dari orang tua sendiri (mis. baru sadar salah ketik "Budy" jadi
+     * "Budi") akan salah terdeteksi sebagai "pasien lain" dan menghapus
+     * seluruh progres sesi yang sudah terkumpul. Ambang batasnya SENGAJA
+     * memakai nama_confident_threshold yang sama dengan PatientMatcher
+     * (bukan angka terpisah) - supaya "pasien yang sama untuk keperluan
+     * pencarian" dan "pasien yang sama untuk keperluan kontinuitas sesi"
+     * tidak bisa diam-diam berbeda definisi. tanggal_lahir TETAP exact
+     * match (tidak ikut fuzzy) - orang tua jarang salah ketik tanggal lahir
+     * anak sendiri sesering salah ketik ejaan nama, jadi tanggal lahir yang
+     * benar-benar berbeda tetap sinyal kuat bahwa ini memang pasien lain.
      */
     protected function resetIfDifferentPatient(ChatSession $session, array $extracted): void
     {
@@ -443,7 +461,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         }
 
         $context = $session->context ?? [];
-        $sameNama = Str::lower(trim($newNama)) === Str::lower(trim((string) ($context['nama'] ?? '')));
+        $sameNama = NameSimilarity::score($newNama, $context['nama'] ?? null) >= config('gtk.patient_matching.nama_confident_threshold');
         $sameTanggalLahir = $newTanggalLahir === ($context['tanggal_lahir'] ?? null);
 
         if ($sameNama && $sameTanggalLahir) {
@@ -525,7 +543,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
      * STATE_1_PENGUMPULAN_DATA - §6.A PRD: tidak melompat ke booking sebelum
      * nama, tanggal lahir, nama ibu, jenis kelamin, dan keluhan lengkap.
      */
-    protected function handleStateOne(ChatSession $session, array $result, GtkApiService $gtk): string
+    protected function handleStateOne(ChatSession $session, array $result, GtkApiService $gtk, PatientMatcher $matcher): string
     {
         $context = $session->context;
 
@@ -569,7 +587,21 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             return $result['reply'];
         }
 
-        $noRm = $this->resolvePatient($session, $gtk, $context);
+        // resolvePatient() dijalankan ULANG dari nol setiap giliran selama
+        // masih di STATE_1 (bukan cuma sekali) - sengaja dibuat begini
+        // (pola sama persis dengan slot_ditawarkan di handleStateTwo())
+        // supaya kalau user mengoreksi ejaan nama/tanggal lahir SETELAH
+        // ditanya konfirmasi (lihat awaiting_confirmation di bawah), koreksi
+        // itu otomatis dievaluasi ulang tanpa butuh mekanisme deteksi
+        // khusus - context['nama']/['tanggal_lahir'] sudah ter-update oleh
+        // mergeContext() sebelum method ini dipanggil.
+        $resolution = $this->resolvePatient($session, $gtk, $matcher, $context, $result);
+
+        if ($resolution['awaiting_confirmation']) {
+            return $resolution['reply'];
+        }
+
+        $noRm = $resolution['no_rm'];
         $session->no_rm = $noRm;
         $session->state = ChatState::Konfirmasi->value;
         $session->step = 'pilih_poli_shift';
@@ -589,7 +621,40 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             ."Poliklinik tersedia: {$poliOptions}";
     }
 
-    protected function resolvePatient(ChatSession $session, GtkApiService $gtk, array $context): string
+    /**
+     * Resolusi identitas pasien BERLAPIS - dulu satu-satunya sinyal adalah
+     * exact match "nama"+"tanggal_lahir" ke GTK, kandidat pertama dari
+     * "list" langsung dipakai/dibuang tanpa penilaian apapun. Akibat nyata:
+     * typo/variasi ejaan kecil pada nama (mis. "Budy" vs "Budi" di data)
+     * membuat pasien lama dianggap "tidak ditemukan" lalu DIAM-DIAM
+     * didaftarkan ulang sebagai rekam medis baru (duplikat), padahal
+     * datanya sebenarnya sudah ada.
+     *
+     * Sekarang SEMUA kandidat yang dikembalikan GTK dinilai lewat
+     * PatientMatcher (bukan cuma list[0]), dan kalau GTK sendiri belum
+     * cukup yakin, cache lokal `patients` (indexed nama+tanggal_lahir,
+     * sebelumnya tidak pernah dipakai untuk pencarian sama sekali) ikut
+     * dikonsultasikan - berguna untuk pasien yang pernah booking lewat bot
+     * ini sebelumnya walau pencarian nama di sisi GTK sendiri gagal karena
+     * typo. Cara memanggil GTK (`cariPasien` dengan nama+tanggal_lahir)
+     * SENGAJA tidak diubah/diperlonggar - perilaku pencarian di sisi GTK
+     * sendiri di luar kendali & belum terverifikasi menerima parameter
+     * lain, jadi cukup nilai ulang apa yang sudah dikembalikan.
+     *
+     * Tiga kemungkinan hasil dari PatientMatcher (lihat docblock kelas itu
+     * untuk detail skor/ambang batas):
+     * - Confident: langsung pakai, PERSIS seperti perilaku lama - tidak ada
+     *   friksi tambahan untuk kasus umum "nama diketik benar".
+     * - Probable: JANGAN langsung pakai ATAU langsung anggap pasien baru -
+     *   tawarkan kandidatnya & minta konfirmasi eksplisit dulu (pola sama
+     *   persis dengan slot_ditawarkan di handleStateTwo()), supaya tidak
+     *   diam-diam salah nyambung ke rekam medis orang lain MAUPUN diam-diam
+     *   membuat duplikat padahal pasiennya sudah ada.
+     * - NoMatch: buat pasien baru, PERSIS seperti perilaku lama.
+     *
+     * @return array{awaiting_confirmation: bool, reply: ?string, no_rm: ?string}
+     */
+    protected function resolvePatient(ChatSession $session, GtkApiService $gtk, PatientMatcher $matcher, array $context, array $result): array
     {
         // no_hp normalnya sudah terisi lewat autoFillPhoneFromChatId() atau
         // hasil tanya-jawab AI. Tetap divalidasi/normalisasi ulang di sini
@@ -600,39 +665,172 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             ?? IndonesianPhoneNumber::fromChatId($session->chat_id)
             ?? '-';
 
+        $submitted = [
+            'nama' => $context['nama'],
+            'tanggal_lahir' => $context['tanggal_lahir'],
+            'nama_ibu_kandung' => $context['nama_ibu_kandung'] ?? null,
+            'no_hp' => $noHp !== '-' ? $noHp : null,
+        ];
+
         try {
             $found = $gtk->cariPasien([
                 'nama' => $context['nama'],
                 'tanggal_lahir' => $context['tanggal_lahir'],
             ]);
-            $match = $found['list'][0] ?? null;
+            $gtkList = $found['list'] ?? [];
         } catch (GtkApiException $e) {
-            $match = null;
+            $gtkList = [];
         }
 
-        if ($match) {
-            $noRm = (string) $match['no_rm'];
+        $gtkCandidates = $this->mapGtkCandidates($gtkList);
+        $evaluation = $matcher->evaluate($submitted, $gtkCandidates);
 
-            Patient::updateOrCreate(['no_rm' => $noRm], [
-                'nama' => $match['nama'] ?? $context['nama'],
-                'jk' => ($match['jeniskelamin'] ?? null) === 'L' ? 'LAKI-LAKI' : 'PEREMPUAN',
-                'tanggal_lahir' => $match['tanggallahir'] ?? $context['tanggal_lahir'],
-                'nama_ibu_kandung' => $match['namaibu'] ?? $context['nama_ibu_kandung'],
-                // Utamakan nomor yang baru saja dikonfirmasi orang tua di
-                // chat ini ($noHp) daripada nomor lama yang sudah tercatat
-                // di GTK ($match['nohp']) - itulah tujuan no_hp_dikonfirmasi:
-                // catatan GTK bisa saja berisi nomor placeholder/basi dari
-                // registrasi sebelumnya. Baru fallback ke punya GTK kalau
-                // nomor sesi ini benar-benar tidak bisa ditentukan.
-                'no_hp' => $noHp !== '-' ? $noHp : ($match['nohp'] ?? '-'),
-                'alamat' => $match['alamat'] ?? null,
-                'nik' => $match['nik'] ?? null,
-                'last_synced_at' => now(),
-            ]);
+        // Cache lokal HANYA dikonsultasikan kalau kandidat dari GTK sendiri
+        // belum cukup meyakinkan (Confident) - lihat keputusan produk di
+        // atas: jangan pernah mengubah cara memanggil API GTK, cache lokal
+        // murni lapisan tambahan yang sepenuhnya kita kendalikan sendiri.
+        if ($evaluation['verdict'] !== PatientMatchVerdict::Confident) {
+            $localPatients = Patient::query()->where('tanggal_lahir', $context['tanggal_lahir'])->get();
 
-            return $noRm;
+            if ($localPatients->isNotEmpty()) {
+                $localCandidates = $this->mapLocalCandidates($localPatients);
+                // Kandidat GTK didahulukan (index lebih kecil) saat dedup
+                // supaya kalau pasien yang sama muncul di kedua sumber,
+                // field-fieldnya memakai data GTK yang lebih baru - cache
+                // lokal cuma snapshot lama dari kunjungan/booking sebelumnya.
+                $merged = $this->dedupeCandidatesByNoRm([...$gtkCandidates, ...$localCandidates]);
+                $evaluation = $matcher->evaluate($submitted, $merged);
+            }
         }
 
+        if ($evaluation['verdict'] === PatientMatchVerdict::Probable) {
+            return $this->handleProbableMatch($session, $context, $result, $evaluation['candidate'], $noHp);
+        }
+
+        // Confident atau NoMatch: bersihkan sisa penawaran pasien dari
+        // giliran sebelumnya kalau ada (mis. giliran lalu Probable, lalu
+        // user mengoreksi datanya sedemikian rupa sehingga giliran ini
+        // sudah Confident/tidak match sama sekali) - supaya context tidak
+        // menyimpan pasien_ditawarkan basi yang sudah tidak relevan.
+        if (($context['pasien_ditawarkan'] ?? null) !== null) {
+            unset($context['pasien_ditawarkan']);
+            $session->context = $context;
+        }
+
+        return $evaluation['verdict'] === PatientMatchVerdict::Confident
+            ? $this->commitMatchedPatient($evaluation['candidate'], $context, $noHp)
+            : $this->createNewPatient($gtk, $context, $noHp);
+    }
+
+    /**
+     * Kandidat "Probable" (lihat resolvePatient()) tidak langsung dipakai
+     * ATAU langsung dianggap pasien baru - tawarkan dulu & tunggu
+     * konfirmasi eksplisit, mengikuti pola slot_ditawarkan di
+     * handleStateTwo() persis: giliran PERTAMA kandidat ini ditawarkan,
+     * kirim pertanyaan konfirmasi yang DISUSUN SERVER (bukan diserahkan ke
+     * AI - salah tafsir/halusinasi AI di sini berisiko tinggi, ini soal
+     * identitas rekam medis, bukan sekadar jadwal). Baru pada giliran
+     * BERIKUTNYA kalau kandidat yang SAMA masih ditawarkan (belum berubah
+     * karena user mengoreksi data) DAN AI menandai extracted.konfirmasi
+     * true (user menjawab "ya"), kandidat ini benar-benar dipakai.
+     *
+     * @return array{awaiting_confirmation: bool, reply: ?string, no_rm: ?string}
+     */
+    protected function handleProbableMatch(ChatSession $session, array $context, array $result, array $candidate, string $noHp): array
+    {
+        $offeredNoRm = $candidate['no_rm'];
+
+        if (($context['pasien_ditawarkan'] ?? null) !== $offeredNoRm) {
+            $context['pasien_ditawarkan'] = $offeredNoRm;
+            $session->context = $context;
+
+            return [
+                'awaiting_confirmation' => true,
+                'reply' => $this->buildPatientConfirmationQuestion($candidate),
+                'no_rm' => null,
+            ];
+        }
+
+        // ready_for_next_state tidak perlu dicek ulang di sini - handleStateOne()
+        // sudah menegakkannya sebelum resolvePatient() (dan method ini)
+        // pernah dipanggil sama sekali pada giliran ini.
+        $confirmed = ($result['extracted']['konfirmasi'] ?? false) === true;
+
+        if (! $confirmed) {
+            return ['awaiting_confirmation' => true, 'reply' => $result['reply'], 'no_rm' => null];
+        }
+
+        unset($context['pasien_ditawarkan']);
+        $session->context = $context;
+
+        return $this->commitMatchedPatient($candidate, $context, $noHp);
+    }
+
+    protected function buildPatientConfirmationQuestion(array $candidate): string
+    {
+        $tanggalLabel = $candidate['tanggal_lahir'] !== null
+            ? Carbon::parse($candidate['tanggal_lahir'])->translatedFormat('d F Y')
+            : 'tidak diketahui';
+
+        return "Mohon konfirmasi, apakah data pasien yang dimaksud adalah *{$candidate['nama']}* "
+            ."(lahir {$tanggalLabel})? Kami menemukan kecocokan berdasarkan tanggal lahir yang sama. "
+            .'Balas "Ya" jika benar, atau beri tahu kami nama lengkap dan tanggal lahir yang benar kalau belum sesuai.';
+    }
+
+    /**
+     * @return array{awaiting_confirmation: bool, reply: ?string, no_rm: ?string}
+     */
+    protected function commitMatchedPatient(array $candidate, array $context, string $noHp): array
+    {
+        // Kandidat sumber cache lokal: sudah berupa model Patient utuh,
+        // cukup di-refresh (bukan re-upsert dari nol seperti sumber GTK) -
+        // nama/nama_ibu_kandung sengaja ikut diperbarui dari yang baru saja
+        // disampaikan/dikonfirmasi user di chat ini, karena setidaknya
+        // sama valid dengan ejaan lama yang tersimpan (bisa jadi ejaan lama
+        // itu sendiri yang typo).
+        if ($candidate['source'] === 'local') {
+            /** @var Patient $patient */
+            $patient = $candidate['raw'];
+            $patient->nama = $context['nama'] ?? $patient->nama;
+            $patient->nama_ibu_kandung = $context['nama_ibu_kandung'] ?? $patient->nama_ibu_kandung;
+            $patient->no_hp = $noHp !== '-' ? $noHp : $patient->no_hp;
+            $patient->last_synced_at = now();
+            $patient->save();
+
+            return ['awaiting_confirmation' => false, 'reply' => null, 'no_rm' => $patient->no_rm];
+        }
+
+        // Kandidat sumber GTK: logic upsert PERSIS sama dengan perilaku
+        // lama (sebelum fitur pencocokan berlapis ini ada) - hanya lokasinya
+        // yang berpindah ke method terpisah.
+        $match = $candidate['raw'];
+        $noRm = (string) $match['no_rm'];
+
+        Patient::updateOrCreate(['no_rm' => $noRm], [
+            'nama' => $match['nama'] ?? $context['nama'],
+            'jk' => ($match['jeniskelamin'] ?? null) === 'L' ? 'LAKI-LAKI' : 'PEREMPUAN',
+            'tanggal_lahir' => $match['tanggallahir'] ?? $context['tanggal_lahir'],
+            'nama_ibu_kandung' => $match['namaibu'] ?? $context['nama_ibu_kandung'],
+            // Utamakan nomor yang baru saja dikonfirmasi orang tua di
+            // chat ini ($noHp) daripada nomor lama yang sudah tercatat
+            // di GTK ($match['nohp']) - itulah tujuan no_hp_dikonfirmasi:
+            // catatan GTK bisa saja berisi nomor placeholder/basi dari
+            // registrasi sebelumnya. Baru fallback ke punya GTK kalau
+            // nomor sesi ini benar-benar tidak bisa ditentukan.
+            'no_hp' => $noHp !== '-' ? $noHp : ($match['nohp'] ?? '-'),
+            'alamat' => $match['alamat'] ?? null,
+            'nik' => $match['nik'] ?? null,
+            'last_synced_at' => now(),
+        ]);
+
+        return ['awaiting_confirmation' => false, 'reply' => null, 'no_rm' => $noRm];
+    }
+
+    /**
+     * @return array{awaiting_confirmation: bool, reply: ?string, no_rm: ?string}
+     */
+    protected function createNewPatient(GtkApiService $gtk, array $context, string $noHp): array
+    {
         $response = $gtk->tambahPasien([
             'nama' => $context['nama'],
             'jk' => $context['jenis_kelamin'],
@@ -658,7 +856,74 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             'last_synced_at' => now(),
         ]);
 
-        return $noRm;
+        return ['awaiting_confirmation' => false, 'reply' => null, 'no_rm' => $noRm];
+    }
+
+    /**
+     * @return array<int, array{no_rm: string, nama: ?string, tanggal_lahir: ?string, nama_ibu_kandung: ?string, no_hp: ?string, source: string, raw: array}>
+     */
+    protected function mapGtkCandidates(array $list): array
+    {
+        return array_map(fn (array $row) => [
+            'no_rm' => (string) ($row['no_rm'] ?? ''),
+            'nama' => $row['nama'] ?? null,
+            'tanggal_lahir' => $this->normalizeGtkDate($row['tanggallahir'] ?? null),
+            'nama_ibu_kandung' => $row['namaibu'] ?? null,
+            'no_hp' => $row['nohp'] ?? null,
+            'source' => 'gtk',
+            'raw' => $row,
+        ], $list);
+    }
+
+    /**
+     * @param  Collection<int, Patient>  $patients
+     * @return array<int, array{no_rm: string, nama: ?string, tanggal_lahir: ?string, nama_ibu_kandung: ?string, no_hp: ?string, source: string, raw: Patient}>
+     */
+    protected function mapLocalCandidates(Collection $patients): array
+    {
+        return $patients->map(fn (Patient $p) => [
+            'no_rm' => $p->no_rm,
+            'nama' => $p->nama,
+            'tanggal_lahir' => $p->tanggal_lahir?->toDateString(),
+            'nama_ibu_kandung' => $p->nama_ibu_kandung,
+            'no_hp' => $p->no_hp,
+            'source' => 'local',
+            'raw' => $p,
+        ])->values()->all();
+    }
+
+    protected function dedupeCandidatesByNoRm(array $candidates): array
+    {
+        $unique = [];
+
+        foreach ($candidates as $candidate) {
+            $unique[$candidate['no_rm']] ??= $candidate;
+        }
+
+        return array_values($unique);
+    }
+
+    /**
+     * Field tanggallahir dari GTK belum pernah benar-benar dibandingkan ke
+     * apapun sebelum fitur pencocokan berlapis ini (dulu hanya dipakai
+     * sebagai parameter pencarian, tidak pernah dibaca balik dari response)
+     * - jadi format wire persisnya belum pernah terverifikasi ketat.
+     * Normalisasi defensif ke yyyy-mm-dd di sini supaya perbandingan exact-
+     * match tanggal_lahir di PatientMatcher tidak diam-diam gagal total
+     * hanya gara-gara GTK mengembalikan format lain (mis. dengan jam
+     * "2021-01-01 00:00:00").
+     */
+    protected function normalizeGtkDate(?string $raw): ?string
+    {
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($raw)->toDateString();
+        } catch (\Exception) {
+            return null;
+        }
     }
 
     /**

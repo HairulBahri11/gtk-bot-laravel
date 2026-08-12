@@ -415,7 +415,15 @@ class AiEngineService
                     maupun bilang "secepatnya"/"terserah" secara eksplisit),
                     false/null kalau pertanyaan itu belum pernah diajukan
                     atau belum dijawab user - lihat STATE_2_KONFIRMASI>,
-                  "konfirmasi": <true|false|null>,
+                  "konfirmasi": <true|false|null - jawaban terhadap
+                    PERTANYAAN KONFIRMASI TERAKHIR yang diajukan asisten
+                    (lihat giliran "assistant" paling akhir di riwayat
+                    percakapan) - maknanya tergantung konteks saat
+                    pertanyaan itu diajukan (bisa berarti konfirmasi
+                    kecocokan data pasien di STATE_1, atau konfirmasi
+                    jadwal booking di STATE_2 - lihat instruksi state di
+                    bawah), true HANYA jika user menjawab afirmatif jelas
+                    terhadap pertanyaan itu>,
                   "intent": "<batal|reschedule|kunjungan_baru|tanya|null>"
                 },
                 "ready_for_next_state": <true jika seluruh syarat state saat ini
@@ -523,7 +531,32 @@ class AiEngineService
                kosong/tidak valid, baru tanyakan secara spesifik & empatik
                field yang kurang itu saja (boleh satu-dua per giliran) sampai
                lengkap.
-            4. Set ready_for_next_state true hanya jika SEMUA dari nama,
+            4. Kalau data terkumpul memuat "pasien_ditawarkan" (No. RM
+               kandidat pasien yang kemungkinan cocok, ditemukan sistem
+               berdasarkan tanggal lahir yang sama persis), itu artinya
+               pesan "assistant" PALING AKHIR di riwayat percakapan SUDAH
+               menanyakan ke orang tua apakah data pasien yang dimaksud
+               adalah kandidat tersebut (lihat isi pesannya di riwayat
+               untuk detail nama & tanggal lahir yang ditanyakan) - sistem
+               yang menyusun pertanyaan itu, BUKAN kamu. Selama field ini
+               masih ada di data terkumpul, JANGAN tanyakan ulang field
+               lain (nama/tanggal lahir/dll sudah lengkap semua, itu
+               sebabnya kandidat ini bisa ditemukan) - fokus HANYA
+               menafsirkan jawaban user terhadap pertanyaan konfirmasi itu:
+               - Kalau orang tua menjawab afirmatif jelas (mis. "ya"/
+                 "benar"/"betul itu anak saya"), set extracted.konfirmasi =
+                 true pada giliran ini - sistem yang akan memproses
+                 lanjutannya, cukup balas singkat mengonfirmasi kamu sudah
+                 menerima jawaban itu.
+               - Kalau orang tua menjawab bahwa data itu SALAH/bukan anak
+                 mereka, atau jawabannya tidak jelas mengonfirmasi apapun,
+                 JANGAN set extracted.konfirmasi = true - sebaliknya, dengan
+                 empatik minta mereka mengetik ulang nama lengkap dan
+                 tanggal lahir anak yang benar (data baru ini akan otomatis
+                 dicek ulang oleh sistem, kamu tidak perlu melakukan apapun
+                 secara khusus selain menangkapnya sebagai extracted.nama/
+                 extracted.tanggal_lahir seperti biasa).
+            5. Set ready_for_next_state true hanya jika SEMUA dari nama,
                tanggal lahir, nama ibu kandung, jenis kelamin, no_hp, DAN
                keluhan (dengan poli_pilihan hasil klasifikasi) sudah lengkap &
                valid, DAN extracted.poli_disetujui = true (bukan pada giliran
