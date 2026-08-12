@@ -130,4 +130,71 @@ class AiDoctorScheduleAwarenessTest extends TestCase
             return str_contains($systemMessage['content'], '[DIBATALKAN - Dokter cuti]');
         });
     }
+
+    /**
+     * Kejadian nyata di produksi: dokter yang sama bisa punya baris jadwal
+     * GTK ('source'='gtk', kadang basi/placeholder) DAN baris manual
+     * ('source'='manual', yang benar dari dashboard /pre-layanan/jadwal)
+     * sekaligus, dengan jam yang saling bertentangan. Kalau keduanya
+     * disodorkan bersamaan ke model, ambiguitas itu bikin model ragu &
+     * mengarahkan ke admin alih-alih menjawab. doctorScheduleSummary() HARUS
+     * hanya menyertakan baris 'manual' - baris 'gtk' yang bertentangan wajib
+     * tidak pernah muncul di prompt sama sekali.
+     */
+    public function test_conflicting_gtk_synced_row_is_excluded_from_the_prompt(): void
+    {
+        $poli = Poliklinik::create(['kode_poliklinik' => '01', 'nama_poliklinik' => 'Poli Spesialis Anak', 'is_active' => true]);
+        Doctor::create(['kode_dokter' => 'MANUAL-RETNO', 'nama_dokter' => 'dr. Retno Wulandari, Sp.A', 'kode_poliklinik' => $poli->kode_poliklinik, 'is_active' => true]);
+        Doctor::create(['kode_dokter' => 'GTK-RETNO', 'nama_dokter' => 'dr. Retno Wulandari, Sp.A', 'kode_poliklinik' => $poli->kode_poliklinik, 'is_active' => true]);
+
+        DoctorSchedule::create([
+            'kode_dokter' => 'MANUAL-RETNO',
+            'kode_poliklinik' => $poli->kode_poliklinik,
+            'hari' => $this->hariFor(now()),
+            'jam_mulai' => '08:00',
+            'jam_selesai' => '09:30',
+            'shift' => 'pagi',
+            'kuota_total' => 15,
+            'source' => 'manual',
+        ]);
+
+        // Baris GTK basi/kontradiktif untuk dokter bernama sama - HARUS
+        // tersaring, tidak boleh muncul di prompt.
+        DoctorSchedule::create([
+            'kode_dokter' => 'GTK-RETNO',
+            'kode_poliklinik' => $poli->kode_poliklinik,
+            'hari' => $this->hariFor(now()),
+            'jam_mulai' => '07:00',
+            'jam_selesai' => '11:00',
+            'shift' => 'pagi',
+            'kuota_total' => 5,
+            'source' => 'gtk',
+        ]);
+
+        $aiContent = json_encode([
+            'reply' => 'Jadwal dr. Retno hari ini pukul 08:00-09:30.',
+            'extracted' => [],
+            'ready_for_next_state' => false,
+        ]);
+
+        Http::fake([
+            'openrouter.ai/*' => Http::response(['choices' => [['message' => ['content' => $aiContent]]]], 200),
+        ]);
+
+        $session = ChatSession::create([
+            'chat_id' => '6281234567890@c.us',
+            'state' => ChatState::PengumpulanData->value,
+            'context' => [],
+        ]);
+
+        app(AiEngineService::class)->interpret($session, 'dr. Retno hari ini jadwal jam berapa?');
+
+        Http::assertSent(function ($request) {
+            $systemMessage = collect($request->data()['messages'])->firstWhere('role', 'system');
+            $content = $systemMessage['content'];
+
+            return str_contains($content, 'dr. Retno Wulandari, Sp.A (Poli Spesialis Anak): Pagi 08:00-09:30')
+                && ! str_contains($content, '07:00-11:00');
+        });
+    }
 }

@@ -191,6 +191,17 @@ class AiEngineService
      * hari ini+besok saja (bukan seluruh minggu/semua dokter tanpa batas)
      * supaya ukuran prompt tetap kecil - pertanyaan di luar rentang ini tetap
      * diarahkan ke admin sesuai instruksi.
+     *
+     * HANYA baris source='manual' (persis yang tampil di dashboard
+     * /pre-layanan/jadwal) - baris hasil sinkronisasi GTK ('gtk') SENGAJA
+     * tidak diikutkan. Kejadian nyata: dokter yang sama bisa punya baris GTK
+     * & baris manual sekaligus dengan jam yang BERBEDA/kontradiktif (mis. GTK
+     * masih menyimpan jadwal placeholder/basi 07:00-11:00 sementara jadwal
+     * manual yang benar 08:00-09:30) - kalau keduanya disodorkan bersamaan,
+     * model jadi ragu & malah mengarahkan ke admin alih-alih menjawab. Untuk
+     * dokter GTK biasa (bukan jadwal manual), pertanyaan jadwal tetap
+     * diarahkan ke admin sesuai instruksi di ATURAN WAJIB - fitur ini scoped
+     * ke jadwal manual saja per permintaan awal.
      */
     protected function doctorScheduleSummary(): string
     {
@@ -211,6 +222,7 @@ class AiEngineService
             $schedules = DoctorSchedule::query()
                 ->with(['doctor', 'poliklinik'])
                 ->where('hari', $hari)
+                ->where('source', 'manual')
                 ->whereHas('doctor', fn ($q) => $q->where('is_active', true))
                 ->orderBy('jam_mulai')
                 ->get();
@@ -290,9 +302,13 @@ class AiEngineService
               PERNAH keliru/tertukar tahun, terutama untuk tanggal_kunjungan yang
               WAJIB selalu di hari ini atau setelahnya.
             - DATA JADWAL DOKTER hari ini & besok (data resmi dari sistem, BUKAN
-              tebakan - kalau user menanyakan jam praktik dokter untuk hari ini
-              atau besok, jawab LANGSUNG memakai data ini, jangan arahkan ke
-              admin selama jawabannya ada di sini):
+              tebakan - HANYA mencakup dokter dengan jadwal terkelola manual di
+              sistem ini, bukan seluruh dokter). Kalau user menanyakan jam
+              praktik dokter untuk hari ini/besok DAN dokternya ADA di daftar
+              ini, jawab LANGSUNG memakai data ini, jangan arahkan ke admin.
+              Kalau dokter yang ditanyakan TIDAK ADA di daftar ini, tetap
+              ikuti aturan arahkan-ke-admin di bawah (jangan menebak dari luar
+              data ini):
               {$doctorSchedule}
             - Jangan pernah melompat ke tahap booking sebelum semua data pada tahap
               STATE 1 (nama anak, tanggal lahir format yyyy-mm-dd, nama ibu kandung,
