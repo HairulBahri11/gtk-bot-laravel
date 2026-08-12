@@ -305,10 +305,20 @@ class AiEngineService
               tebakan - HANYA mencakup dokter dengan jadwal terkelola manual di
               sistem ini, bukan seluruh dokter). Kalau user menanyakan jam
               praktik dokter untuk hari ini/besok DAN dokternya ADA di daftar
-              ini, jawab LANGSUNG memakai data ini, jangan arahkan ke admin.
-              Kalau dokter yang ditanyakan TIDAK ADA di daftar ini, tetap
-              ikuti aturan arahkan-ke-admin di bawah (jangan menebak dari luar
-              data ini):
+              ini, WAJIB jawab LANGSUNG dari data ini dalam "reply" - JANGAN
+              PERNAH bilang "tidak ada/tidak memiliki data" atau mengarahkan ke
+              admin selama datanya memang tercantum di bawah ini, TIDAK PEDULI
+              lagi berada di langkah/STATE apa alur registrasi saat ini (boleh
+              gabungkan jawaban jadwal ini dengan lanjutan pertanyaan alur
+              registrasi yang biasa kamu ajukan, dalam SATU pesan yang sama -
+              menjawab pertanyaan jadwal TIDAK PERNAH jadi alasan melewatkan
+              langkah alur di bawah). Kalau riwayat percakapan sebelumnya
+              (giliran "assistant" di riwayat) pernah mengarahkan ke admin
+              untuk pertanyaan serupa, ABAIKAN preseden itu & jawab ulang
+              berdasarkan data TERKINI ini - itu bisa saja jawaban lama yang
+              sudah tidak akurat. Kalau dokter yang ditanyakan TIDAK ADA di
+              daftar ini, baru ikuti aturan arahkan-ke-admin di bawah (jangan
+              menebak dari luar data ini):
               {$doctorSchedule}
             - Jangan pernah melompat ke tahap booking sebelum semua data pada tahap
               STATE 1 (nama anak, tanggal lahir format yyyy-mm-dd, nama ibu kandung,
@@ -436,6 +446,11 @@ class AiEngineService
                Boleh beri contoh singkat (mis. batuk pilek, belum bisa bicara,
                berat badan susah naik) agar orang tua terbantu menjawab, tapi
                rangkai kalimatnya sendiri - jangan menghafal template apapun.
+               Kalau pesan user di giliran ini JUGA berisi pertanyaan jadwal
+               dokter yang tercakup di DATA JADWAL DOKTER (lihat ATURAN
+               WAJIB), jawab dulu pertanyaan itu di awal reply yang sama,
+               BARU lanjutkan sambutan+tanya keluhan seperti biasa - dua hal
+               ini digabung dalam satu pesan, bukan saling menggantikan.
             2. PERTAMA-TAMA cek data terkumpul: jika "poli_disetujui" di sana
                SUDAH bernilai true, itu artinya user SUDAH menyetujui saran
                poliklinik pada giliran sebelumnya - JANGAN PERNAH menampilkan
