@@ -4,7 +4,10 @@ namespace App\Services\Ai;
 
 use App\Enums\ChatState;
 use App\Models\ChatSession;
+use App\Models\DoctorSchedule;
+use App\Models\QuotaShift;
 use App\Models\WhatsappMessage;
+use App\Support\IndonesianPhoneNumber;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -180,6 +183,70 @@ class AiEngineService
         return $history;
     }
 
+    /**
+     * Ringkasan jadwal praktik dokter HARI INI & BESOK (dari doctor_schedules,
+     * dilapis status harian dari quota_shifts - cancel/delay dokter) sebagai
+     * ground truth nyata untuk menjawab pertanyaan "jadwal dr. X jam berapa"
+     * TANPA mengarang (lihat instruksi ATURAN WAJIB terkait). Sengaja dibatasi
+     * hari ini+besok saja (bukan seluruh minggu/semua dokter tanpa batas)
+     * supaya ukuran prompt tetap kecil - pertanyaan di luar rentang ini tetap
+     * diarahkan ke admin sesuai instruksi.
+     */
+    protected function doctorScheduleSummary(): string
+    {
+        $hariIndo = [1 => 'Senin', 2 => 'Selasa', 3 => 'Rabu', 4 => 'Kamis', 5 => 'Jumat', 6 => 'Sabtu', 7 => 'Minggu'];
+        $hariByIso = [1 => 'SENIN', 2 => 'SELASA', 3 => 'RABU', 4 => 'KAMIS', 5 => 'JUMAT', 6 => 'SABTU', 7 => 'MINGGU'];
+        $shiftLabel = ['pagi' => 'Pagi', 'sore' => 'Sore', 'malam' => 'Malam'];
+        $dayLabels = ['hari ini', 'besok'];
+
+        $lines = [];
+
+        foreach ([now()->copy(), now()->copy()->addDay()] as $i => $date) {
+            $hari = $hariByIso[$date->dayOfWeekIso] ?? null;
+
+            if (! $hari) {
+                continue;
+            }
+
+            $schedules = DoctorSchedule::query()
+                ->with(['doctor', 'poliklinik'])
+                ->where('hari', $hari)
+                ->whereHas('doctor', fn ($q) => $q->where('is_active', true))
+                ->orderBy('jam_mulai')
+                ->get();
+
+            if ($schedules->isEmpty()) {
+                continue;
+            }
+
+            $statuses = QuotaShift::query()
+                ->whereDate('tanggal', $date->toDateString())
+                ->get()
+                ->keyBy(fn (QuotaShift $q) => $q->kode_dokter.'|'.$q->shift->value);
+
+            $lines[] = "- {$hariIndo[$date->dayOfWeekIso]} ({$dayLabels[$i]}), {$date->toDateString()}:";
+
+            foreach ($schedules as $schedule) {
+                $status = $statuses[$schedule->kode_dokter.'|'.$schedule->shift->value] ?? null;
+
+                $statusText = match ($status?->status) {
+                    'cancelled' => ' [DIBATALKAN'.($status->reason ? " - {$status->reason}" : '').']',
+                    'delayed' => ' [DELAY '.$status->delay_minutes.' menit'.($status->reason ? " - {$status->reason}" : '').']',
+                    default => '',
+                };
+
+                $jam = substr($schedule->jam_mulai, 0, 5).'-'.substr($schedule->jam_selesai, 0, 5);
+                $namaDokter = $schedule->doctor?->nama_dokter ?? $schedule->kode_dokter;
+                $namaPoli = $schedule->poliklinik?->nama_poliklinik ?? $schedule->kode_poliklinik;
+                $shiftText = $shiftLabel[$schedule->shift->value] ?? $schedule->shift->value;
+
+                $lines[] = "  - {$namaDokter} ({$namaPoli}): {$shiftText} {$jam}{$statusText}";
+            }
+        }
+
+        return $lines === [] ? '(Tidak ada jadwal dokter tercatat untuk hari ini/besok.)' : implode("\n", $lines);
+    }
+
     protected function buildSystemPrompt(ChatSession $session): string
     {
         $context = $session->context ?? [];
@@ -191,12 +258,14 @@ class AiEngineService
             ChatState::Done => $this->stateThreePrompt(),
         };
 
-        $adminNumber = \App\Support\IndonesianPhoneNumber::normalize(config('services.admin.whatsapp_number'))
+        $adminNumber = IndonesianPhoneNumber::normalize(config('services.admin.whatsapp_number'))
             ?? config('services.admin.whatsapp_number');
 
         $today = now();
         $hariIndo = [1 => 'Senin', 2 => 'Selasa', 3 => 'Rabu', 4 => 'Kamis', 5 => 'Jumat', 6 => 'Sabtu', 7 => 'Minggu'];
         $todayLabel = ($hariIndo[$today->dayOfWeekIso] ?? '').', '.$today->format('Y-m-d');
+
+        $doctorSchedule = $this->doctorScheduleSummary();
 
         return <<<PROMPT
             Kamu adalah AI Pre-Layanan resmi Graha Tumbuh Kembang Anak Jombang (GTK),
@@ -220,6 +289,11 @@ class AiEngineService
               sudah lewat di tahun berjalan, baru pakai tahun berikutnya. JANGAN
               PERNAH keliru/tertukar tahun, terutama untuk tanggal_kunjungan yang
               WAJIB selalu di hari ini atau setelahnya.
+            - DATA JADWAL DOKTER hari ini & besok (data resmi dari sistem, BUKAN
+              tebakan - kalau user menanyakan jam praktik dokter untuk hari ini
+              atau besok, jawab LANGSUNG memakai data ini, jangan arahkan ke
+              admin selama jawabannya ada di sini):
+              {$doctorSchedule}
             - Jangan pernah melompat ke tahap booking sebelum semua data pada tahap
               STATE 1 (nama anak, tanggal lahir format yyyy-mm-dd, nama ibu kandung,
               keluhan) tervalidasi lengkap.
@@ -269,7 +343,8 @@ class AiEngineService
               instruksi STATE di bawah.
             - Nomor WhatsApp admin kami: {$adminNumber}. Kalau ada kendala teknis,
               ATAU user menanyakan hal yang jawabannya TIDAK ADA di data/instruksi
-              pada prompt ini (mis. jadwal dokter di jam spesifik, ketersediaan
+              pada prompt ini (mis. jadwal dokter di LUAR hari ini/besok yang
+              tidak tercakup di DATA JADWAL DOKTER di atas, ketersediaan kuota
               tanggal tertentu, kebijakan/prosedur yang tidak dijelaskan di sini),
               JANGAN PERNAH mengarang jawaban - sampaikan dengan empatik bahwa
               untuk hal itu user bisa langsung menghubungi admin kami di nomor
