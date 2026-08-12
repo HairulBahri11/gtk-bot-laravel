@@ -42,9 +42,13 @@ class JadwalDokterController extends Controller
 
         // Master dokter buat dropdown "Kode Dokter" di form tambah jadwal -
         // dokter cuma boleh pilih dirinya sendiri, admin boleh pilih semua
-        // dokter aktif.
+        // dokter aktif. whereNotNull('kode_poliklinik') karena sync GTK bisa
+        // menyimpan dokter tanpa poliklinik (lihat QuotaService::syncDoctors) -
+        // dokter seperti itu tidak bisa dipakai bikin jadwal manual sama sekali
+        // (doctor_schedules.kode_poliklinik NOT NULL).
         $doctors = Doctor::query()
             ->where('is_active', true)
+            ->whereNotNull('kode_poliklinik')
             ->when($user->isDokter(), fn ($q) => $q->where('kode_dokter', $user->kode_dokter))
             ->orderBy('nama_dokter')
             ->get(['kode_dokter', 'nama_dokter']);
@@ -98,6 +102,14 @@ class JadwalDokterController extends Controller
         $this->authorizeDokter($request->user(), $data['kode_dokter']);
 
         $doctor = Doctor::query()->findOrFail($data['kode_dokter']);
+
+        // Jaring pengaman - dropdown di frontend sudah menyaring dokter tanpa
+        // poliklinik, tapi tetap divalidasi di sini (mis. data berubah antara
+        // load halaman & submit) supaya errornya jelas, bukan QueryException
+        // NOT NULL constraint mentah dari Postgres.
+        if (! $doctor->kode_poliklinik) {
+            return back()->with('error', "Dokter {$doctor->nama_dokter} belum punya poliklinik di master data - lengkapi dulu sebelum bisa dibuatkan jadwal manual.");
+        }
 
         DoctorSchedule::query()->create([
             'kode_dokter' => $doctor->kode_dokter,
