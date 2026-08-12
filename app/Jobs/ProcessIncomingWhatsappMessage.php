@@ -6,9 +6,11 @@ use App\Enums\BookingStatus;
 use App\Enums\ChatState;
 use App\Enums\Shift;
 use App\Models\ChatSession;
+use App\Models\Doctor;
 use App\Models\DoctorSchedule;
 use App\Models\Patient;
 use App\Models\Poliklinik;
+use App\Models\QuotaShift;
 use App\Models\WhatsappMessage;
 use App\Services\Ai\AiEngineException;
 use App\Services\Ai\AiEngineService;
@@ -36,9 +38,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, SerializesModels;
 
-    public function __construct(public string $chatId, public string $text)
-    {
-    }
+    public function __construct(public string $chatId, public string $text) {}
 
     /**
      * @return array<int, object>
@@ -74,6 +74,26 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         $session->last_message_at = now();
 
         $this->autoFillPhoneFromChatId($session);
+
+        // Pertanyaan jadwal dokter (mis. "dr. Retno hari ini jadwal jam
+        // berapa?") dijawab LANGSUNG dari data doctor_schedules/quota_shifts
+        // di sini - TIDAK PERNAH diserahkan ke AI. Kejadian nyata: walau
+        // AiEngineService::buildSystemPrompt() sudah disuntik data jadwal
+        // yang benar, model tetap kadang mengarahkan ke admin/mengaku "tidak
+        // punya data" (pola halusinasi/kepatuhan instruksi yang tidak bisa
+        // diandalkan) - jawaban seperti ini HARUS pasti benar, jadi jangan
+        // pernah digantungkan ke LLM sama sekali. Sesi/state TIDAK disentuh
+        // sama sekali di sini supaya alur booking yang sedang berjalan
+        // (kalau ada) tidak terganggu - murni jawaban FAQ di luar state
+        // machine.
+        $jadwalReply = $this->tryAnswerDoctorScheduleQuestion($this->text);
+
+        if ($jadwalReply !== null) {
+            $session->save();
+            $this->reply($wa, $jadwalReply);
+
+            return;
+        }
 
         try {
             $result = $ai->interpret($session, $this->text);
@@ -128,6 +148,121 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             $context['no_hp'] = $phone;
             $session->context = $context;
         }
+    }
+
+    /**
+     * Kata kunci yang menandakan pesan user sedang menanyakan jam praktik
+     * dokter (bukan sekadar menyebut kata "jadwal" dalam konteks lain,
+     * mis. "jadwalkan saya" saat konfirmasi booking - kombinasi dengan nama
+     * dokter di bawah ini yang membuat deteksi cukup spesifik).
+     */
+    protected const JADWAL_KEYWORDS = ['jadwal', 'jam berapa', 'jam praktik', 'jam praktek', 'praktik jam', 'buka jam', 'praktek jam'];
+
+    /**
+     * Gelar/singkatan umum yang dibuang dari nama dokter sebelum dicocokkan
+     * ke teks user - tanpa ini token seperti "dr"/"sp"/"a" akan cocok ke
+     * hampir semua pesan (false positive masif).
+     */
+    protected const GELAR_STOPWORDS = ['dr', 'drg', 'sp', 'kj', 'ra', 'a', 'm', 'ked'];
+
+    /**
+     * Jawab pertanyaan jadwal dokter LANGSUNG dari data lokal (doctor_schedules
+     * + status quota_shifts hari ini/besok), tanpa melibatkan AI sama sekali -
+     * lihat catatan di handle(). HANYA mencakup dokter dengan jadwal manual
+     * (source='manual', persis seperti /pre-layanan/jadwal) - dokter yang
+     * hanya punya jadwal hasil sync GTK tetap diproses normal lewat AI
+     * (di luar cakupan fitur ini).
+     *
+     * @return string|null null kalau pesan bukan pertanyaan jadwal, atau
+     *                     tidak menyebut dokter manapun yang jadwalnya dikelola manual.
+     */
+    protected function tryAnswerDoctorScheduleQuestion(string $text): ?string
+    {
+        $normalized = Str::lower($text);
+
+        $looksLikeScheduleQuestion = collect(self::JADWAL_KEYWORDS)->contains(fn (string $kw) => Str::contains($normalized, $kw));
+
+        if (! $looksLikeScheduleQuestion) {
+            return null;
+        }
+
+        $manualDoctors = Doctor::query()
+            ->where('is_active', true)
+            ->whereHas('schedules', fn ($q) => $q->where('source', 'manual'))
+            ->get();
+
+        $matched = $manualDoctors->first(function (Doctor $doctor) use ($normalized) {
+            $nameTokens = collect(preg_split('/[\s.,]+/', $doctor->nama_dokter))
+                ->map(fn (string $t) => Str::lower($t))
+                ->reject(fn (string $t) => $t === '' || in_array($t, self::GELAR_STOPWORDS, true))
+                ->filter(fn (string $t) => mb_strlen($t) >= 3);
+
+            return $nameTokens->contains(fn (string $token) => Str::contains($normalized, $token));
+        });
+
+        if (! $matched) {
+            return null;
+        }
+
+        return $this->buildDoctorScheduleAnswer($matched);
+    }
+
+    /**
+     * Susun jawaban jadwal hari ini & besok untuk SATU dokter (manual saja),
+     * dilapis status harian dari quota_shifts (cancel/delay).
+     */
+    protected function buildDoctorScheduleAnswer(Doctor $doctor): string
+    {
+        $shiftLabel = ['pagi' => 'Pagi', 'sore' => 'Sore', 'malam' => 'Malam'];
+        $dayLabels = ['hari ini', 'besok'];
+        $lines = [];
+
+        foreach ([Carbon::today(), Carbon::tomorrow()] as $i => $date) {
+            $hari = self::HARI_BY_ISO[$date->dayOfWeekIso] ?? null;
+
+            if (! $hari) {
+                continue;
+            }
+
+            $schedules = DoctorSchedule::query()
+                ->with('poliklinik')
+                ->where('kode_dokter', $doctor->kode_dokter)
+                ->where('hari', $hari)
+                ->where('source', 'manual')
+                ->orderBy('jam_mulai')
+                ->get();
+
+            if ($schedules->isEmpty()) {
+                continue;
+            }
+
+            $statuses = QuotaShift::query()
+                ->where('kode_dokter', $doctor->kode_dokter)
+                ->whereDate('tanggal', $date->toDateString())
+                ->get()
+                ->keyBy(fn (QuotaShift $q) => $q->shift->value);
+
+            foreach ($schedules as $schedule) {
+                $status = $statuses[$schedule->shift->value] ?? null;
+                $jam = substr($schedule->jam_mulai, 0, 5).'-'.substr($schedule->jam_selesai, 0, 5);
+                $shiftText = $shiftLabel[$schedule->shift->value] ?? $schedule->shift->value;
+
+                $statusText = match ($status?->status) {
+                    'cancelled' => ' (DIBATALKAN'.($status->reason ? ": {$status->reason}" : '').')',
+                    'delayed' => ' (delay '.$status->delay_minutes.' menit'.($status->reason ? ": {$status->reason}" : '').')',
+                    default => '',
+                };
+
+                $lines[] = "{$dayLabels[$i]} shift {$shiftText} pukul {$jam}{$statusText}, di {$schedule->poliklinik?->nama_poliklinik}";
+            }
+        }
+
+        if (empty($lines)) {
+            return "Mohon maaf, {$doctor->nama_dokter} tidak memiliki jadwal praktik untuk hari ini maupun besok. "
+                .'Silakan tanyakan tanggal lain atau hubungi kami untuk info lebih lanjut.';
+        }
+
+        return "Jadwal praktik {$doctor->nama_dokter}: ".implode('; ', $lines).'.';
     }
 
     /**
