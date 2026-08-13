@@ -144,6 +144,7 @@ class DoctorWhatsappCommandTest extends TestCase
                 'nama' => 'Budi', 'tanggal_lahir' => '2021-01-01', 'nama_ibu_kandung' => 'Sari',
                 'jenis_kelamin' => 'LAKI-LAKI', 'no_hp' => '089999999999', 'no_hp_dikonfirmasi' => true,
                 'keluhan' => 'Demam', 'poli_pilihan' => 'Tumbuh Kembang Anak', 'poli_disetujui' => true,
+                'jenis_layanan' => 'pemeriksaan', 'jenis_layanan_dijawab' => true,
             ],
             'ready_for_next_state' => true,
         ]);

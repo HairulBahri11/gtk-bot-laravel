@@ -80,8 +80,14 @@ class DoctorShiftCancellationTest extends TestCase
         ]);
     }
 
-    protected function makeQuotaShift(string $shift, int $kuotaTotal = 5, int $kuotaTerpakai = 0, string $status = 'open'): QuotaShift
-    {
+    protected function makeQuotaShift(
+        string $shift,
+        int $kuotaTotal = 5,
+        int $kuotaTerpakai = 0,
+        string $status = 'open',
+        int $kuotaKonsultasi = 1,
+        int $kuotaTerpakaiKonsultasi = 0,
+    ): QuotaShift {
         return QuotaShift::create([
             'kode_dokter' => $this->kodeDokter,
             'kode_poliklinik' => $this->kodePoliklinik,
@@ -89,11 +95,13 @@ class DoctorShiftCancellationTest extends TestCase
             'shift' => $shift,
             'kuota_total' => $kuotaTotal,
             'kuota_terpakai' => $kuotaTerpakai,
+            'kuota_konsultasi' => $kuotaKonsultasi,
+            'kuota_terpakai_konsultasi' => $kuotaTerpakaiKonsultasi,
             'status' => $status,
         ]);
     }
 
-    protected function makeBooking(string $noRm, string $shift): Booking
+    protected function makeBooking(string $noRm, string $shift, string $jenisLayanan = 'pemeriksaan'): Booking
     {
         Patient::create([
             'no_rm' => $noRm,
@@ -119,6 +127,7 @@ class DoctorShiftCancellationTest extends TestCase
             'kode_dokter' => $this->kodeDokter,
             'tanggal_periksa' => $this->tanggal,
             'shift' => $shift,
+            'jenis_layanan' => $jenisLayanan,
             'status' => BookingStatus::Booked->value,
         ]);
     }

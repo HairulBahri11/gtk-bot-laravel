@@ -553,6 +553,45 @@ class WhatsappWebhookTest extends TestCase
         $this->assertSame(ChatState::PengumpulanData, $session->state);
     }
 
+    /**
+     * jenis_layanan_dijawab WAJIB true sebelum sesi boleh pindah ke STATE_2 -
+     * kalau AI keliru langsung set ready_for_next_state tanpa pernah
+     * menandai field ini, server harus menahan di STATE_1 (bukan diam-diam
+     * melompat lanjut tanpa pernah benar-benar menanyakan jenis layanan ke
+     * pasien - dua pool kuota ini terisolasi, salah kategori berarti salah
+     * kuota yang dipakai).
+     */
+    public function test_state_one_does_not_advance_until_jenis_layanan_is_answered(): void
+    {
+        $this->seedMasterData();
+
+        $fakeWa = new FakeWhatsAppService;
+        $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
+
+        Http::fake([
+            'openrouter.ai/*' => Http::response($this->openRouterResponse($this->stateOneAiContent([
+                'jenis_layanan' => null,
+                'jenis_layanan_dijawab' => null,
+            ])), 200),
+            '*url=auth*' => Http::response($this->gtkOk(['token' => 'test-token']), 200),
+            '*url=caripasien*' => Http::response($this->gtkFail('Data tidak ditemukan', 404), 200),
+        ]);
+
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Anak saya Budi, lahir 2021-01-01, ibu Sari, keluhan demam, laki-laki',
+            ],
+        ])->assertOk();
+
+        $session = ChatSession::query()->where('chat_id', $this->chatId)->firstOrFail();
+        $this->assertSame(ChatState::PengumpulanData, $session->state);
+        $this->assertNull($session->no_rm);
+        Http::assertNotSent(fn ($request) => str_contains((string) $request->url(), 'tambahpasien'));
+    }
+
     protected function seedMasterData(): void
     {
         $poli = Poliklinik::create([
@@ -608,6 +647,8 @@ class WhatsappWebhookTest extends TestCase
                 'keluhan' => 'Demam',
                 'poli_pilihan' => 'Tumbuh Kembang Anak',
                 'poli_disetujui' => true,
+                'jenis_layanan' => 'pemeriksaan',
+                'jenis_layanan_dijawab' => true,
             ], $extractedOverrides),
             'ready_for_next_state' => true,
         ]);

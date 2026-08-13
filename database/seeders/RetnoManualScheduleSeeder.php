@@ -22,12 +22,17 @@ use Illuminate\Database\Seeder;
  * kuota_total 15/shift dipakai sebagai default awal (belum ada angka resmi
  * di luar diskusi tim yang men-scope ulang alokasi Gizi/DDTK secara terpisah
  * dari revisi ini) - bisa diubah kapan pun lewat dashboard Jadwal Dokter.
+ * Dari 15 itu, 1 kuota dialokasikan ke Konsultasi (sisanya 14 ke
+ * Pemeriksaan/Imunisasi secara turunan - lihat DoctorSchedule::
+ * getKuotaPemeriksaanAttribute()) - juga bisa disesuaikan lewat dashboard.
  */
 class RetnoManualScheduleSeeder extends Seeder
 {
     public const KODE_DOKTER = 'MANUAL-RETNO';
 
     protected const DEFAULT_KUOTA = 15;
+
+    protected const DEFAULT_KUOTA_KONSULTASI = 1;
 
     public function run(): void
     {
@@ -76,6 +81,7 @@ class RetnoManualScheduleSeeder extends Seeder
                     'jam_selesai' => $jamSelesai,
                     'shift' => $quota->bucketShift($jamMulai)->value,
                     'kuota_total' => self::DEFAULT_KUOTA,
+                    'kuota_konsultasi' => self::DEFAULT_KUOTA_KONSULTASI,
                     'source' => 'manual',
                     'synced_at' => now(),
                 ],

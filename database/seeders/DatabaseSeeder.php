@@ -81,6 +81,7 @@ class DatabaseSeeder extends Seeder
         ];
 
         $doctorSchedules = collect();
+        $kuotaKonsultasiDefault = (int) config('gtk.kuota_konsultasi_default');
 
         foreach ($schedules as [$dokter, $poli, $hari, $jamMulai, $jamSelesai, $shift, $kuota]) {
             $doctorSchedules->push(DoctorSchedule::create([
@@ -91,6 +92,7 @@ class DatabaseSeeder extends Seeder
                 'jam_selesai' => $jamSelesai,
                 'shift' => $shift->value,
                 'kuota_total' => $kuota,
+                'kuota_konsultasi' => $kuotaKonsultasiDefault,
                 'synced_at' => now(),
             ]));
         }
@@ -113,6 +115,8 @@ class DatabaseSeeder extends Seeder
                     'shift' => $schedule->shift->value,
                     'kuota_total' => $schedule->kuota_total,
                     'kuota_terpakai' => 0,
+                    'kuota_konsultasi' => $schedule->kuota_konsultasi,
+                    'kuota_terpakai_konsultasi' => 0,
                     'last_synced_at' => now(),
                 ]);
             }
@@ -156,6 +160,7 @@ class DatabaseSeeder extends Seeder
             'kode_dokter' => $dokterRina->kode_dokter,
             'tanggal_periksa' => $nextMonday->toDateString(),
             'shift' => Shift::Pagi->value,
+            'jenis_layanan' => 'pemeriksaan',
             'status' => BookingStatus::Booked->value,
         ]);
 

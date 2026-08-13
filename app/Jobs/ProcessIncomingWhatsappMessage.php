@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Enums\BookingStatus;
 use App\Enums\ChatState;
+use App\Enums\JenisLayanan;
 use App\Enums\PatientMatchVerdict;
 use App\Enums\Shift;
 use App\Models\ChatSession;
@@ -486,7 +487,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
      * berikutnya membalikkannya ke false/null (lihat catatan di
      * handleStateOne() untuk masing-masing flag).
      */
-    protected const STICKY_TRUE_KEYS = ['poli_disetujui', 'no_hp_dikonfirmasi', 'tanggal_kunjungan_dijawab'];
+    protected const STICKY_TRUE_KEYS = ['poli_disetujui', 'no_hp_dikonfirmasi', 'tanggal_kunjungan_dijawab', 'jenis_layanan_dijawab'];
 
     /**
      * Field context yang benar-benar dibaca kode kita - HARUS sinkron persis
@@ -504,6 +505,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
     protected const KNOWN_CONTEXT_KEYS = [
         'nama', 'tanggal_lahir', 'nama_ibu_kandung', 'jenis_kelamin', 'no_hp',
         'no_hp_dikonfirmasi', 'keluhan', 'poli_pilihan', 'poli_disetujui',
+        'jenis_layanan', 'jenis_layanan_dijawab',
         'shift_pilihan', 'tanggal_kunjungan', 'tanggal_kunjungan_dijawab',
     ];
 
@@ -566,6 +568,18 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             $session->context = $context;
         }
 
+        // jenis_layanan WAJIB salah satu nilai valid JenisLayanan (bukan
+        // diturunkan/ditebak dari poliklinik atau keluhan - lihat docblock
+        // enum JenisLayanan) - kalau AI menandai sudah dijawab tapi nilainya
+        // tidak valid/tidak dikenal, kosongkan lagi keduanya supaya field
+        // ini dianggap belum terjawab & ditanyakan ulang, persis pola
+        // validasi no_hp di atas.
+        if (($context['jenis_layanan_dijawab'] ?? false) === true
+            && JenisLayanan::tryFrom((string) ($context['jenis_layanan'] ?? '')) === null) {
+            unset($context['jenis_layanan'], $context['jenis_layanan_dijawab']);
+            $session->context = $context;
+        }
+
         $required = ['nama', 'tanggal_lahir', 'nama_ibu_kandung', 'jenis_kelamin', 'no_hp', 'keluhan'];
         $complete = collect($required)->every(fn ($field) => filled($context[$field] ?? null));
 
@@ -583,7 +597,13 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         // AiEngineService::stateOnePrompt) sebelum lanjut ke booking.
         $noHpDikonfirmasi = ($context['no_hp_dikonfirmasi'] ?? false) === true;
 
-        if (! $complete || ! $poliDisetujui || ! $noHpDikonfirmasi || ! $result['ready_for_next_state']) {
+        // jenis_layanan (Pemeriksaan/Imunisasi atau Konsultasi) WAJIB
+        // ditanyakan & dijawab eksplisit sebelum booking - dua pool kuota
+        // ini terisolasi (lihat QuotaShift::tersisaFor()), jadi AI TIDAK
+        // BOLEH menyimpulkannya sendiri dari keluhan/poliklinik.
+        $jenisLayananDijawab = ($context['jenis_layanan_dijawab'] ?? false) === true;
+
+        if (! $complete || ! $poliDisetujui || ! $noHpDikonfirmasi || ! $jenisLayananDijawab || ! $result['ready_for_next_state']) {
             return $result['reply'];
         }
 
@@ -1009,6 +1029,16 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             return 'Mohon pilih shift: Pagi, Sore, atau Malam.';
         }
 
+        // jenis_layanan sudah wajib divalidasi & dijawab di STATE_1
+        // (handleStateOne()) sebelum sesi bisa sampai ke STATE_2 sama sekali
+        // - re-validasi di sini murni jaring pengaman terakhir, sama seperti
+        // Shift::tryFrom() di atas, BUKAN titik penegakan utamanya.
+        $jenis = JenisLayanan::tryFrom((string) ($context['jenis_layanan'] ?? ''));
+
+        if (! $jenis) {
+            return 'Mohon konfirmasi ulang jenis layanan (Pemeriksaan/Imunisasi atau Konsultasi).';
+        }
+
         if (! $tanggalSecepatnya) {
             $requestedDate = $this->parseTanggalKunjungan($tanggalRaw);
 
@@ -1027,7 +1057,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
                 return 'Mohon sebutkan tanggal kunjungan yang valid, mulai hari ini atau setelahnya (mis. "20 Agustus 2026").';
             }
 
-            $slot = $this->findSlotOnDate($poli->kode_poliklinik, $shift, $requestedDate, $quota);
+            $slot = $this->findSlotOnDate($poli->kode_poliklinik, $shift, $requestedDate, $quota, $jenis);
 
             if (! $slot) {
                 unset($context['tanggal_kunjungan'], $context['tanggal_kunjungan_dijawab']);
@@ -1045,12 +1075,12 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
                     .implode(', ', $alternatif).'. Silakan pilih salah satu.';
             }
         } else {
-            $slot = $this->findNearestSlot($poli->kode_poliklinik, $shift, $quota);
+            $slot = $this->findNearestSlot($poli->kode_poliklinik, $shift, $quota, $jenis);
 
             if (! $slot) {
                 $availableShifts = collect(Shift::cases())
                     ->reject(fn (Shift $s) => $s === $shift)
-                    ->filter(fn (Shift $s) => $this->findNearestSlot($poli->kode_poliklinik, $s, $quota))
+                    ->filter(fn (Shift $s) => $this->findNearestSlot($poli->kode_poliklinik, $s, $quota, $jenis))
                     ->map(fn (Shift $s) => $s->label());
 
                 if ($availableShifts->isEmpty()) {
@@ -1097,21 +1127,27 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             'kode_dokter' => $slot['kode_dokter'],
             'tanggal_periksa' => $slot['tanggal'],
             'shift' => $shift,
+            'jenis_layanan' => $jenis,
         ]);
 
         $session->state = ChatState::Done->value;
         $session->step = null;
 
         if ($booking->status === BookingStatus::Waitlist) {
-            $pesan = "Kuota shift {$shift->label()} (pukul {$this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai'])}) "
+            // Posisi antrean tunggu dipisah per jenis_layanan (lihat
+            // AntreanService::nextWaitlistPosition()) - sertakan label
+            // kategori supaya "posisi #1" tidak terbaca aneh kalau pasien
+            // lain kategori berbeda kebetulan juga "posisi #1" di shift yang
+            // sama persis.
+            $pesan = "Kuota {$jenis->label()} shift {$shift->label()} (pukul {$this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai'])}) "
                 ."pada {$slot['tanggal']} sudah penuh. Anda dimasukkan ke daftar tunggu "
-                ."(posisi #{$booking->waitlist_position}). Kami akan menghubungi Anda jika ada slot tersedia.";
+                ."{$jenis->label()} (posisi #{$booking->waitlist_position}). Kami akan menghubungi Anda jika ada slot tersedia.";
 
             // §3.2 PRD: tawarkan jadwal dokter yang sama di tanggal/shift lain
             // yang kuotanya masih tersedia, supaya user tidak cuma pasrah
             // menunggu antrean - AntreanService::offerAlternative() sebelumnya
             // sudah ada tapi belum pernah dipanggil dari alur booking.
-            $alternatif = $antrean->offerAlternative($slot['kode_dokter'], $slot['tanggal']);
+            $alternatif = $antrean->offerAlternative($slot['kode_dokter'], $slot['tanggal'], $jenis);
 
             if (! empty($alternatif)) {
                 $daftar = collect($alternatif)
@@ -1127,6 +1163,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
         return "Booking berhasil!\n"
             ."Poliklinik: {$poli->nama_poliklinik}\n"
+            ."Jenis Layanan: {$jenis->label()}\n"
             ."Tanggal: {$slot['tanggal']}\n"
             ."Shift: {$shift->label()} (pukul {$this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai'])})\n"
             ."No. Rawat: {$booking->no_rawat}\n\n"
@@ -1159,7 +1196,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
      *
      * @return array{tanggal: string, kode_dokter: string, jam_mulai: string, jam_selesai: string}|null
      */
-    protected function findNearestSlot(string $kodePoliklinik, Shift $shift, QuotaService $quota): ?array
+    protected function findNearestSlot(string $kodePoliklinik, Shift $shift, QuotaService $quota, JenisLayanan $jenis): ?array
     {
         $hariOrder = array_flip(self::HARI_BY_ISO);
 
@@ -1212,7 +1249,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         // diarahkan ke dokter yang kebetulan lebih dulu di query padahal
         // sudah penuh sementara dokter lain di jam berbeda masih longgar.
         $chosen = $sameDay->first(
-            fn (array $c) => $quota->hasAvailability($c['kode_dokter'], $nearestDate->toDateString(), $shift)
+            fn (array $c) => $quota->hasAvailability($c['kode_dokter'], $nearestDate->toDateString(), $shift, $jenis)
         ) ?? $sameDay->first();
 
         return [
@@ -1248,7 +1285,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
      *
      * @return array{tanggal: string, kode_dokter: string, jam_mulai: string, jam_selesai: string}|null
      */
-    protected function findSlotOnDate(string $kodePoliklinik, Shift $shift, Carbon $date, QuotaService $quota): ?array
+    protected function findSlotOnDate(string $kodePoliklinik, Shift $shift, Carbon $date, QuotaService $quota, JenisLayanan $jenis): ?array
     {
         $hari = self::HARI_BY_ISO[$date->dayOfWeekIso] ?? null;
 
@@ -1274,7 +1311,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
         $tanggal = $date->toDateString();
         $schedule = $schedules->first(
-            fn (DoctorSchedule $s) => $quota->hasAvailability($s->kode_dokter, $tanggal, $shift)
+            fn (DoctorSchedule $s) => $quota->hasAvailability($s->kode_dokter, $tanggal, $shift, $jenis)
         ) ?? $schedules->first();
 
         return [
@@ -1353,19 +1390,25 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         if ($intent === 'kunjungan_baru') {
             $context = $session->context ?? [];
 
-            // poli_disetujui & tanggal_kunjungan_dijawab termasuk STICKY_TRUE_KEYS
-            // (sekali true, mergeContext() tidak akan pernah menimpanya balik ke
-            // false) - keduanya atribut PER-KUNJUNGAN, bukan permanen per-pasien,
-            // jadi WAJIB direset manual di sini. Tanpa ini, AI mengira poli baru
-            // sudah disetujui & tanggal kunjungan baru sudah dijawab (lihat
-            // instruksi STATE_2 di AiEngineService::stateTwoPrompt), lalu memakai
-            // tanggal_kunjungan kunjungan SEBELUMNYA untuk booking kunjungan ini.
+            // poli_disetujui, tanggal_kunjungan_dijawab, & jenis_layanan_dijawab
+            // termasuk STICKY_TRUE_KEYS (sekali true, mergeContext() tidak akan
+            // pernah menimpanya balik ke false) - semuanya atribut PER-KUNJUNGAN,
+            // bukan permanen per-pasien, jadi WAJIB direset manual di sini. Tanpa
+            // ini, AI mengira poli baru sudah disetujui & tanggal kunjungan baru
+            // sudah dijawab (lihat instruksi STATE_2 di AiEngineService::
+            // stateTwoPrompt), lalu memakai tanggal_kunjungan KUNJUNGAN SEBELUMNYA
+            // untuk booking kunjungan ini - begitu pula jenis_layanan: kunjungan
+            // baru bisa saja kategorinya beda dari kunjungan sebelumnya (mis. dulu
+            // pemeriksaan, sekarang cuma konsultasi kontrol), jadi kalau tidak
+            // direset di sini booking kedua akan diam-diam memakai pool kuota
+            // kunjungan pertama tanpa pernah benar-benar ditanyakan ulang.
             // slot_ditawarkan juga wajib dibersihkan - kalau tidak, slot lama
             // yang kebetulan cocok lagi bisa lolos gerbang konfirmasi tanpa
             // pernah benar-benar ditawarkan ulang untuk kunjungan baru ini.
             unset(
                 $context['poli_pilihan'], $context['poli_disetujui'],
                 $context['shift_pilihan'],
+                $context['jenis_layanan'], $context['jenis_layanan_dijawab'],
                 $context['tanggal_kunjungan'], $context['tanggal_kunjungan_dijawab'],
                 $context['slot_ditawarkan'],
             );

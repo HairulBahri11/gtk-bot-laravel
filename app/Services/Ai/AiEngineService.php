@@ -398,6 +398,15 @@ class AiEngineService
                     menolak saran poli_pilihan yang pernah disampaikan,
                     false kalau belum/baru saja disampaikan, null kalau
                     poli_pilihan juga belum ada>,
+                  "jenis_layanan": "<pemeriksaan|konsultasi atau null - WAJIB
+                    hasil jawaban EKSPLISIT user terhadap pertanyaan "mau
+                    Pemeriksaan/Imunisasi atau Konsultasi", JANGAN PERNAH
+                    ditebak/disimpulkan sendiri dari keluhan atau
+                    poli_pilihan (lihat STATE_1)>",
+                  "jenis_layanan_dijawab": <true HANYA jika pertanyaan jenis
+                    layanan sudah benar-benar diajukan DAN dijawab user
+                    dengan salah satu pilihan yang valid, false/null kalau
+                    belum pernah ditanyakan atau belum dijawab>,
                   "shift_pilihan": "<pagi|sore|malam atau null>",
                   "tanggal_kunjungan": "<WAJIB diisi salah satu dari dua
                     kemungkinan ini begitu tanggal_kunjungan_dijawab = true
@@ -495,8 +504,26 @@ class AiEngineService
                konfirmasi yang sama, bukan template atau daftar kaku yang sama
                tiap kali, meski boleh pakai penomoran bila membantu
                keterbacaan. Field yang mungkin perlu ditanyakan: Nama Anak,
-               Tanggal Lahir (yyyy-mm-dd), Nama Ibu Kandung, Jenis Kelamin, dan
-               Nomor WhatsApp aktif.
+               Tanggal Lahir (yyyy-mm-dd), Nama Ibu Kandung, Jenis Kelamin,
+               Nomor WhatsApp aktif, dan Jenis Layanan (Pemeriksaan/Imunisasi
+               atau Konsultasi).
+               PENTING soal jenis_layanan: setiap shift dokter membagi
+               kuotanya jadi dua pool TERPISAH - Pemeriksaan/Imunisasi dan
+               Konsultasi - jadi field ini WAJIB ditanyakan sebagai pertanyaan
+               pilihan yang JELAS (mis. "kunjungan kali ini untuk pemeriksaan/
+               imunisasi, atau konsultasi?"), boleh digabung natural dalam
+               pesan yang sama saat menanyakan field lain yang masih kosong.
+               JANGAN PERNAH menyimpulkan/menebak sendiri jawabannya dari
+               keluhan atau poli_pilihan (mis. JANGAN otomatis mengisi
+               "pemeriksaan" hanya karena keluhannya soal sakit/imunisasi) -
+               harus benar-benar jawaban eksplisit orang tua. Begitu orang tua
+               menjawab dengan salah satu dari dua pilihan itu (boleh kata
+               lain yang jelas maksudnya, mis. "periksa saja"/"mau konsul
+               aja"), isi extracted.jenis_layanan dengan "pemeriksaan" atau
+               "konsultasi" DAN set extracted.jenis_layanan_dijawab = true
+               pada giliran yang sama. Kalau jawabannya ambigu/tidak jelas
+               termasuk yang mana, tanyakan ulang secara spesifik - JANGAN
+               menebak salah satu secara sepihak.
                PENTING soal no_hp: nomor WhatsApp pengirim MUNGKIN sudah
                otomatis diambil & diisi ke field "no_hp" pada data terkumpul
                sebelum percakapan ini dimulai, jika formatnya terdeteksi valid
@@ -562,7 +589,8 @@ class AiEngineService
                valid, DAN extracted.poli_disetujui = true (bukan pada giliran
                pertama kali saran poliklinik itu disampaikan), DAN
                extracted.no_hp_dikonfirmasi = true (lihat "PENTING soal
-               no_hp" di atas).
+               no_hp" di atas), DAN extracted.jenis_layanan_dijawab = true
+               (lihat "PENTING soal jenis_layanan" di atas).
 
             TABEL KLASIFIKASI LAYANAN (cocokkan keluhan ke kata kunci berikut,
             urutkan dari atas - jika keluhan cocok ke kata kunci poli spesifik
@@ -652,11 +680,13 @@ class AiEngineService
     {
         return <<<'TXT'
             STATE SEKARANG: STATE_2_KONFIRMASI
-            Tugasmu: tampilkan ringkasan data yang terkumpul. poli_pilihan
-            biasanya SUDAH terisi dari hasil klasifikasi keluhan di STATE 1 -
-            JANGAN tanyakan ulang poliklinik jika sudah ada di data terkumpul,
-            cukup konfirmasikan dalam ringkasan. Hanya tanyakan poli_pilihan jika
-            memang masih kosong.
+            Tugasmu: tampilkan ringkasan data yang terkumpul. poli_pilihan DAN
+            jenis_layanan biasanya SUDAH terisi dari STATE 1 - JANGAN tanyakan
+            ulang keduanya jika sudah ada di data terkumpul, cukup konfirmasikan
+            dalam ringkasan (jenis_layanan WAJIB ikut disebutkan dalam ringkasan
+            akhir, mis. "untuk Pemeriksaan/Imunisasi" atau "untuk Konsultasi" -
+            ini menentukan kuota mana yang dipakai, jangan sampai terlewat dari
+            ringkasan). Hanya tanyakan poli_pilihan jika memang masih kosong.
 
             Tanyakan dua hal berikut (boleh digabung natural dalam satu pesan)
             kalau belum terisi di data terkumpul:

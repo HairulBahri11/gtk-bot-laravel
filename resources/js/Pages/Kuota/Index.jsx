@@ -29,6 +29,46 @@ function StatusBadge({ status, delayMinutes }) {
     );
 }
 
+// Input kuota konsultasi per snapshot harian - disimpan begitu user blur dari
+// field (bukan tombol simpan terpisah, biar cepat untuk penyesuaian kecil).
+// Perubahan ini HANYA menyentuh baris QuotaShift hari ini (lihat
+// KuotaController::updateKonsultasi()) - tidak mengubah template mingguan di
+// halaman Jadwal Dokter, jadi tidak berlaku otomatis untuk hari-hari lain.
+function KonsultasiInput({ quotaShift }) {
+    const [value, setValue] = useState(quotaShift.kuota_konsultasi);
+    const [saving, setSaving] = useState(false);
+
+    function save() {
+        const parsed = Number(value);
+
+        if (Number.isNaN(parsed) || parsed === quotaShift.kuota_konsultasi) {
+            setValue(quotaShift.kuota_konsultasi);
+
+            return;
+        }
+
+        setSaving(true);
+        router.patch(
+            route('kuota.update-konsultasi', quotaShift.id),
+            { kuota_konsultasi: parsed },
+            { preserveScroll: true, preserveState: true, onFinish: () => setSaving(false) },
+        );
+    }
+
+    return (
+        <input
+            type="number"
+            min="0"
+            max={quotaShift.kuota_total}
+            value={value}
+            disabled={saving}
+            onChange={(e) => setValue(e.target.value)}
+            onBlur={save}
+            className="w-16 rounded-md border-gray-300 text-sm shadow-sm focus:border-[#2a78d6] focus:ring-[#2a78d6] disabled:opacity-50 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+        />
+    );
+}
+
 export default function KuotaIndex({ quotaShifts, filters }) {
     const [tanggal, setTanggal] = useState(filters.tanggal);
     const [syncing, setSyncing] = useState(false);
@@ -43,6 +83,10 @@ export default function KuotaIndex({ quotaShifts, filters }) {
                     label: shiftLabel[shift],
                     total: rows.reduce((sum, r) => sum + r.kuota_total, 0),
                     used: rows.reduce((sum, r) => sum + r.kuota_terpakai, 0),
+                    totalPemeriksaan: rows.reduce((sum, r) => sum + r.kuota_pemeriksaan, 0),
+                    usedPemeriksaan: rows.reduce((sum, r) => sum + r.kuota_terpakai_pemeriksaan, 0),
+                    totalKonsultasi: rows.reduce((sum, r) => sum + r.kuota_konsultasi, 0),
+                    usedKonsultasi: rows.reduce((sum, r) => sum + r.kuota_terpakai_konsultasi, 0),
                 };
             }),
         [quotaShifts],
@@ -106,14 +150,26 @@ export default function KuotaIndex({ quotaShifts, filters }) {
                         <h3 className="mb-4 text-sm font-semibold text-gray-900 dark:text-gray-100">
                             Pemakaian Kuota per Shift
                         </h3>
-                        <div className="space-y-4">
+                        <div className="space-y-5">
                             {shiftTotals.map((s) => (
-                                <ShiftMeter
+                                <div
                                     key={s.shift}
-                                    label={s.label}
-                                    used={s.used}
-                                    total={s.total}
-                                />
+                                    className="space-y-2.5 rounded-lg bg-gray-50/60 p-3 dark:bg-gray-800/30"
+                                >
+                                    <ShiftMeter label={s.label} used={s.used} total={s.total} />
+                                    <div className="grid gap-2.5 pl-3 sm:grid-cols-2">
+                                        <ShiftMeter
+                                            label="Pemeriksaan/Imunisasi"
+                                            used={s.usedPemeriksaan}
+                                            total={s.totalPemeriksaan}
+                                        />
+                                        <ShiftMeter
+                                            label="Konsultasi"
+                                            used={s.usedKonsultasi}
+                                            total={s.totalKonsultasi}
+                                        />
+                                    </div>
+                                </div>
                             ))}
                         </div>
                     </div>
@@ -130,6 +186,9 @@ export default function KuotaIndex({ quotaShifts, filters }) {
                                         'Kuota Total',
                                         'Terpakai',
                                         'Tersisa',
+                                        'Pemeriksaan (Tersisa)',
+                                        'Kuota Konsultasi',
+                                        'Konsultasi (Tersisa)',
                                         'Sinkron Terakhir',
                                     ].map((h) => (
                                         <th
@@ -145,7 +204,7 @@ export default function KuotaIndex({ quotaShifts, filters }) {
                                 {quotaShifts.length === 0 && (
                                     <tr>
                                         <td
-                                            colSpan={8}
+                                            colSpan={11}
                                             className="px-4 py-6 text-center text-sm text-gray-500"
                                         >
                                             Tidak ada data kuota untuk
@@ -181,6 +240,15 @@ export default function KuotaIndex({ quotaShifts, filters }) {
                                         </td>
                                         <td className="px-4 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100">
                                             {q.kuota_tersisa}
+                                        </td>
+                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
+                                            {q.kuota_tersisa_pemeriksaan}
+                                        </td>
+                                        <td className="px-4 py-3 text-sm">
+                                            <KonsultasiInput quotaShift={q} />
+                                        </td>
+                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
+                                            {q.kuota_tersisa_konsultasi}
                                         </td>
                                         <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
                                             {q.last_synced_at ?? '-'}

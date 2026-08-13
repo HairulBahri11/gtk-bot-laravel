@@ -2,8 +2,8 @@
 
 namespace App\Services\Quota;
 
+use App\Enums\JenisLayanan;
 use App\Enums\Shift;
-use App\Models\Booking;
 use App\Models\Doctor;
 use App\Models\DoctorSchedule;
 use App\Models\Poliklinik;
@@ -160,6 +160,12 @@ class QuotaService
                         'jam_selesai' => $jadwal['jam_selesai'],
                         'shift' => $shift->value,
                         'kuota_total' => $jadwal['kuota'] ?? 0,
+                        // GTK tidak tahu konsep alokasi konsultasi sama sekali -
+                        // nilai ini HANYA dipakai saat baris ini pertama kali
+                        // dibuat (lihat $updateColumns di bawah, kuota_konsultasi
+                        // sengaja tidak diikutkan supaya penyesuaian dashboard
+                        // tidak ditimpa balik tiap sync).
+                        'kuota_konsultasi' => (int) config('gtk.kuota_konsultasi_default'),
                         'source' => 'gtk',
                         'synced_at' => $now,
                     ];
@@ -208,6 +214,10 @@ class QuotaService
                     'tanggal' => $date->toDateString(),
                     'shift' => $schedule->shift->value,
                     'kuota_total' => $schedule->kuota_total,
+                    // Hanya dipakai saat baris snapshot ini PERTAMA KALI dibuat -
+                    // lihat $updateColumns di bawah & docblock migration
+                    // 2026_08_13_000002_add_kuota_konsultasi_to_quota_shifts_table.
+                    'kuota_konsultasi' => $schedule->kuota_konsultasi,
                 ];
             }
         }
@@ -216,21 +226,47 @@ class QuotaService
             return;
         }
 
-        // Satu query agregat untuk seluruh rentang tanggal, bukan Booking::count()
-        // per kombinasi dokter/tanggal/shift - hindari N+1 ke DB remote.
-        $terpakaiMap = Booking::query()
-            ->selectRaw('kode_dokter, shift, tanggal_periksa as tanggal, COUNT(*) as total')
+        // Satu query agregat untuk seluruh rentang tanggal (dikelompokkan juga
+        // per jenis_layanan supaya kuota_terpakai_konsultasi ikut terhitung
+        // tanpa query kedua) - bukan Booking::count() per kombinasi
+        // dokter/tanggal/shift, hindari N+1 ke DB remote.
+        //
+        // DB::table() (bukan Booking::query()) SENGAJA dipakai di sini -
+        // Booking meng-cast kolom shift/jenis_layanan ke enum (Shift/
+        // JenisLayanan), dan cast itu tetap berlaku walau kolomnya datang
+        // dari selectRaw()/agregat, bukan cuma SELECT biasa. Baris di bawah
+        // membandingkan $row->shift/$row->jenis_layanan sebagai STRING
+        // mentah (concat ke $key, dibandingkan ke ->value) - lewat
+        // Booking::query() nilainya akan jadi objek enum, bukan string,
+        // yang berujung TypeError saat concat & perbandingan yang selalu
+        // gagal secara diam-diam saat dibandingkan ke string literal.
+        $terpakaiRows = DB::table('bookings')
+            ->selectRaw('kode_dokter, shift, tanggal_periksa as tanggal, jenis_layanan, COUNT(*) as total')
             ->whereBetween('tanggal_periksa', [$today->toDateString(), $lastDate->toDateString()])
             ->whereIn('status', ['booked', 'confirmed', 'arrived'])
-            ->groupBy('kode_dokter', 'shift', 'tanggal_periksa')
-            ->get()
-            ->keyBy(fn ($row) => $row->kode_dokter.'|'.Carbon::parse($row->tanggal)->toDateString().'|'.$row->shift);
+            ->groupBy('kode_dokter', 'shift', 'tanggal_periksa', 'jenis_layanan')
+            ->get();
+
+        $terpakaiMap = [];
+        $terpakaiKonsultasiMap = [];
+
+        foreach ($terpakaiRows as $row) {
+            $key = $row->kode_dokter.'|'.Carbon::parse($row->tanggal)->toDateString().'|'.$row->shift;
+            $total = (int) $row->total;
+
+            $terpakaiMap[$key] = ($terpakaiMap[$key] ?? 0) + $total;
+
+            if ($row->jenis_layanan === JenisLayanan::Konsultasi->value) {
+                $terpakaiKonsultasiMap[$key] = $total;
+            }
+        }
 
         $now = now();
 
         foreach ($rows as &$row) {
             $key = $row['kode_dokter'].'|'.$row['tanggal'].'|'.$row['shift'];
-            $row['kuota_terpakai'] = (int) ($terpakaiMap[$key]->total ?? 0);
+            $row['kuota_terpakai'] = (int) ($terpakaiMap[$key] ?? 0);
+            $row['kuota_terpakai_konsultasi'] = (int) ($terpakaiKonsultasiMap[$key] ?? 0);
             $row['last_synced_at'] = $now;
         }
         unset($row);
@@ -239,7 +275,11 @@ class QuotaService
             QuotaShift::query()->upsert(
                 $chunk,
                 ['kode_dokter', 'tanggal', 'shift'],
-                ['kode_poliklinik', 'kuota_total', 'kuota_terpakai', 'last_synced_at'],
+                // kuota_konsultasi SENGAJA tidak diikutkan (lihat komentar saat
+                // baris ini dibangun di atas) - kuota_terpakai_konsultasi WAJIB
+                // ikut, sama seperti kuota_terpakai: keduanya fakta terpakai
+                // yang dihitung ulang, bukan target yang diatur admin.
+                ['kode_poliklinik', 'kuota_total', 'kuota_terpakai', 'kuota_terpakai_konsultasi', 'last_synced_at'],
             );
         }
     }
@@ -278,11 +318,11 @@ class QuotaService
             ->first();
     }
 
-    public function hasAvailability(string $kodeDokter, string $tanggal, Shift $shift): bool
+    public function hasAvailability(string $kodeDokter, string $tanggal, Shift $shift, JenisLayanan $jenis): bool
     {
         $quota = $this->findQuota($kodeDokter, $tanggal, $shift);
 
-        return $quota !== null && $quota->status !== 'cancelled' && $quota->kuota_tersisa > 0;
+        return $quota !== null && $quota->status !== 'cancelled' && $quota->tersisaFor($jenis) > 0;
     }
 
     public function isCancelled(string $kodeDokter, string $tanggal, Shift $shift): bool
@@ -291,38 +331,55 @@ class QuotaService
     }
 
     /**
-     * Cari alternatif shift/tanggal terdekat yang masih tersedia untuk
-     * dokter yang sama, dipakai saat kuota penuh (§3.2 PRD).
+     * Cari alternatif shift/tanggal terdekat yang masih tersedia UNTUK
+     * KATEGORI YANG SAMA (pemeriksaan/konsultasi punya pool terisolasi -
+     * shift dengan pemeriksaan penuh tetap bukan alternatif valid untuk
+     * pasien konsultasi, begitu pula sebaliknya) untuk dokter yang sama,
+     * dipakai saat kuota penuh (§3.2 PRD).
+     *
+     * Prefetch beberapa kali lipat $limit lalu difilter di PHP via
+     * tersisaFor() (bukan whereColumn ke kolom turunan) - kuota_pemeriksaan/
+     * kuota_tersisa_per-kategori bukan kolom asli, jadi tidak bisa
+     * dibandingkan langsung lewat query builder.
      *
      * @return array<int, array{tanggal: string, shift: string}>
      */
-    public function suggestAlternatives(string $kodeDokter, string $tanggal, int $limit = 3): array
+    public function suggestAlternatives(string $kodeDokter, string $tanggal, JenisLayanan $jenis, int $limit = 3): array
     {
         return QuotaShift::query()
             ->where('kode_dokter', $kodeDokter)
             ->whereDate('tanggal', '>=', $tanggal)
-            ->whereColumn('kuota_terpakai', '<', 'kuota_total')
             ->orderBy('tanggal')
             ->orderByRaw("CASE shift WHEN 'pagi' THEN 1 WHEN 'sore' THEN 2 WHEN 'malam' THEN 3 ELSE 4 END")
-            ->limit($limit)
+            ->limit($limit * 5)
             ->get()
+            ->filter(fn (QuotaShift $q) => $q->status !== 'cancelled' && $q->tersisaFor($jenis) > 0)
+            ->take($limit)
             ->map(fn (QuotaShift $q) => [
                 'tanggal' => $q->tanggal->toDateString(),
                 'shift' => $q->shift->value,
             ])
+            ->values()
             ->all();
     }
 
-    public function reserveSlot(string $kodeDokter, string $tanggal, Shift $shift, int $amount = 1): void
+    public function reserveSlot(string $kodeDokter, string $tanggal, Shift $shift, JenisLayanan $jenis, int $amount = 1): void
     {
-        DB::table('quota_shifts')
+        $query = DB::table('quota_shifts')
             ->where('kode_dokter', $kodeDokter)
             ->whereDate('tanggal', $tanggal)
-            ->where('shift', $shift->value)
-            ->increment('kuota_terpakai', $amount);
+            ->where('shift', $shift->value);
+
+        if ($jenis === JenisLayanan::Konsultasi) {
+            // kuota_terpakai (total) WAJIB ikut naik bersamaan - ia tetap
+            // representasi pemakaian gabungan kedua kategori.
+            $query->incrementEach(['kuota_terpakai' => $amount, 'kuota_terpakai_konsultasi' => $amount]);
+        } else {
+            $query->increment('kuota_terpakai', $amount);
+        }
     }
 
-    public function releaseSlot(string $kodeDokter, string $tanggal, Shift $shift, int $amount = 1): void
+    public function releaseSlot(string $kodeDokter, string $tanggal, Shift $shift, JenisLayanan $jenis, int $amount = 1): void
     {
         $quota = $this->findQuota($kodeDokter, $tanggal, $shift);
 
@@ -331,14 +388,26 @@ class QuotaService
         }
 
         $quota->kuota_terpakai = max(0, $quota->kuota_terpakai - $amount);
+
+        if ($jenis === JenisLayanan::Konsultasi) {
+            $quota->kuota_terpakai_konsultasi = max(0, $quota->kuota_terpakai_konsultasi - $amount);
+        }
+
         $quota->save();
     }
 
     /**
      * Geser buffer antrean (§3.2 PRD) sebanyak N kuota tambahan pada shift
      * terkait, untuk menampung promosi waitlist setelah No-Show.
+     *
+     * kuota_total selalu bertambah $amount (pool gabungan memang membesar).
+     * Untuk No-Show kategori Konsultasi, kuota_konsultasi WAJIB ikut
+     * bertambah $amount juga - kalau tidak, kuota_pemeriksaan turunan
+     * (kuota_total - kuota_konsultasi) yang justru diam-diam membesar,
+     * padahal buffer ini seharusnya menambah ruang untuk mempromosikan
+     * waitlist KONSULTASI, bukan pemeriksaan.
      */
-    public function shiftBuffer(string $kodeDokter, string $tanggal, Shift $shift, int $amount): void
+    public function shiftBuffer(string $kodeDokter, string $tanggal, Shift $shift, JenisLayanan $jenis, int $amount): void
     {
         $quota = $this->findQuota($kodeDokter, $tanggal, $shift);
 
@@ -347,6 +416,11 @@ class QuotaService
         }
 
         $quota->kuota_total += $amount;
+
+        if ($jenis === JenisLayanan::Konsultasi) {
+            $quota->kuota_konsultasi += $amount;
+        }
+
         $quota->save();
     }
 
@@ -423,6 +497,8 @@ class QuotaService
             'shift' => $shift->value,
             'kuota_total' => $schedule->kuota_total,
             'kuota_terpakai' => 0,
+            'kuota_konsultasi' => $schedule->kuota_konsultasi,
+            'kuota_terpakai_konsultasi' => 0,
         ]);
     }
 

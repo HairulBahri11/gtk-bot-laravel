@@ -3,6 +3,7 @@
 namespace App\Services\Antrean;
 
 use App\Enums\BookingStatus;
+use App\Enums\JenisLayanan;
 use App\Enums\Shift;
 use App\Jobs\NotifyShiftChangeJob;
 use App\Models\Booking;
@@ -40,6 +41,7 @@ class AntreanService
     public function createBooking(ChatSession $session, array $data): Booking
     {
         $shift = $data['shift'] instanceof Shift ? $data['shift'] : Shift::from($data['shift']);
+        $jenis = $data['jenis_layanan'] instanceof JenisLayanan ? $data['jenis_layanan'] : JenisLayanan::from($data['jenis_layanan']);
         $tanggal = Carbon::parse($data['tanggal_periksa'])->toDateString();
 
         // Titik penjagaan TERAKHIR sebelum benar-benar membuat booking -
@@ -70,8 +72,8 @@ class AntreanService
             );
         }
 
-        return DB::transaction(function () use ($session, $data, $shift, $tanggal) {
-            $available = $this->quota->hasAvailability($data['kode_dokter'], $tanggal, $shift);
+        return DB::transaction(function () use ($session, $data, $shift, $jenis, $tanggal) {
+            $available = $this->quota->hasAvailability($data['kode_dokter'], $tanggal, $shift, $jenis);
 
             if (! $available) {
                 return Booking::create([
@@ -81,8 +83,9 @@ class AntreanService
                     'kode_dokter' => $data['kode_dokter'],
                     'tanggal_periksa' => $tanggal,
                     'shift' => $shift->value,
+                    'jenis_layanan' => $jenis->value,
                     'status' => BookingStatus::Waitlist->value,
-                    'waitlist_position' => $this->nextWaitlistPosition($data['kode_dokter'], $tanggal, $shift),
+                    'waitlist_position' => $this->nextWaitlistPosition($data['kode_dokter'], $tanggal, $shift, $jenis),
                 ]);
             }
 
@@ -102,21 +105,31 @@ class AntreanService
                 'kode_dokter' => $data['kode_dokter'],
                 'tanggal_periksa' => $tanggal,
                 'shift' => $shift->value,
+                'jenis_layanan' => $jenis->value,
                 'status' => BookingStatus::Booked->value,
             ]);
 
-            $this->quota->reserveSlot($data['kode_dokter'], $tanggal, $shift);
+            $this->quota->reserveSlot($data['kode_dokter'], $tanggal, $shift, $jenis);
 
             return $booking;
         });
     }
 
-    protected function nextWaitlistPosition(string $kodeDokter, string $tanggal, Shift $shift): int
+    /**
+     * Posisi antrean tunggu DIPISAH per kategori (jenis_layanan) - kuota
+     * pemeriksaan & konsultasi adalah pool terisolasi (lihat QuotaShift::
+     * tersisaFor()), jadi wajar & DIHARAPKAN dua pasien beda kategori
+     * sama-sama berada di posisi #1 pada shift/tanggal yang sama - lihat
+     * pesan balasan di ProcessIncomingWhatsappMessage yang menyertakan
+     * label kategori supaya ini tidak terbaca sebagai bug oleh pasien.
+     */
+    protected function nextWaitlistPosition(string $kodeDokter, string $tanggal, Shift $shift, JenisLayanan $jenis): int
     {
         $max = Booking::query()
             ->where('kode_dokter', $kodeDokter)
             ->whereDate('tanggal_periksa', $tanggal)
             ->where('shift', $shift->value)
+            ->where('jenis_layanan', $jenis->value)
             ->where('status', BookingStatus::Waitlist->value)
             ->max('waitlist_position');
 
@@ -142,8 +155,8 @@ class AntreanService
         ]);
 
         if ($wasHoldingSlot) {
-            $this->quota->releaseSlot($booking->kode_dokter, $booking->tanggal_periksa->toDateString(), $booking->shift);
-            $this->promoteWaitlist($booking->kode_dokter, $booking->tanggal_periksa->toDateString(), $booking->shift, 1);
+            $this->quota->releaseSlot($booking->kode_dokter, $booking->tanggal_periksa->toDateString(), $booking->shift, $booking->jenis_layanan);
+            $this->promoteWaitlist($booking->kode_dokter, $booking->tanggal_periksa->toDateString(), $booking->shift, $booking->jenis_layanan, 1);
         }
 
         return $booking->fresh();
@@ -170,9 +183,9 @@ class AntreanService
             'buffer_shifted_count' => $buffer,
         ]);
 
-        $this->quota->releaseSlot($booking->kode_dokter, $tanggal, $booking->shift);
-        $this->quota->shiftBuffer($booking->kode_dokter, $tanggal, $booking->shift, $buffer);
-        $this->promoteWaitlist($booking->kode_dokter, $tanggal, $booking->shift, $buffer);
+        $this->quota->releaseSlot($booking->kode_dokter, $tanggal, $booking->shift, $booking->jenis_layanan);
+        $this->quota->shiftBuffer($booking->kode_dokter, $tanggal, $booking->shift, $booking->jenis_layanan, $buffer);
+        $this->promoteWaitlist($booking->kode_dokter, $tanggal, $booking->shift, $booking->jenis_layanan, $buffer);
 
         return $booking->fresh();
     }
@@ -198,12 +211,13 @@ class AntreanService
      * Promosikan pasien waitlist berikutnya (urut waitlist_position) ke
      * slot yang baru terbuka, sebanyak $limit kuota.
      */
-    public function promoteWaitlist(string $kodeDokter, string $tanggal, Shift $shift, int $limit): void
+    public function promoteWaitlist(string $kodeDokter, string $tanggal, Shift $shift, JenisLayanan $jenis, int $limit): void
     {
         $candidates = Booking::query()
             ->where('kode_dokter', $kodeDokter)
             ->whereDate('tanggal_periksa', $tanggal)
             ->where('shift', $shift->value)
+            ->where('jenis_layanan', $jenis->value)
             ->where('status', BookingStatus::Waitlist->value)
             ->orderBy('waitlist_position')
             ->limit($limit)
@@ -225,7 +239,7 @@ class AntreanService
                     'waitlist_position' => null,
                 ]);
 
-                $this->quota->reserveSlot($kodeDokter, $tanggal, $shift);
+                $this->quota->reserveSlot($kodeDokter, $tanggal, $shift, $jenis);
             } catch (GtkApiException $e) {
                 Log::warning('Gagal promosikan waitlist', [
                     'booking_id' => $candidate->id,
@@ -241,9 +255,9 @@ class AntreanService
      *
      * @return array<int, array{tanggal: string, shift: string}>
      */
-    public function offerAlternative(string $kodeDokter, string $tanggal): array
+    public function offerAlternative(string $kodeDokter, string $tanggal, JenisLayanan $jenis): array
     {
-        return $this->quota->suggestAlternatives($kodeDokter, $tanggal);
+        return $this->quota->suggestAlternatives($kodeDokter, $tanggal, $jenis);
     }
 
     /**
@@ -275,7 +289,7 @@ class AntreanService
                 (int) config('gtk.notification_stagger_max_seconds'),
             );
 
-            $target = $this->findNextOpenShiftSameDay($kodeDokter, $tanggal, $shift);
+            $target = $this->findNextOpenShiftSameDay($kodeDokter, $tanggal, $shift, $booking->jenis_layanan);
             $newBooking = $target ? $this->moveBookingToShift($booking, $tanggal, $target, $reason ?? "Shift {$shift->label()} dibatalkan dokter") : null;
 
             if ($newBooking) {
@@ -293,7 +307,7 @@ class AntreanService
                 'tanggal' => $tanggal,
                 'shift' => $shift->value,
                 'reason' => $reason,
-                'alternatif' => $this->quota->suggestAlternatives($kodeDokter, $tanggal),
+                'alternatif' => $this->quota->suggestAlternatives($kodeDokter, $tanggal, $booking->jenis_layanan),
             ])->delay(now()->addSeconds($staggerOffset));
         }
 
@@ -341,7 +355,7 @@ class AntreanService
      * punya jadwal dokter, belum dibatalkan, dan kuotanya masih tersedia -
      * dipakai cancelShiftAndReschedule() untuk geser berantai.
      */
-    protected function findNextOpenShiftSameDay(string $kodeDokter, string $tanggal, Shift $current): ?Shift
+    protected function findNextOpenShiftSameDay(string $kodeDokter, string $tanggal, Shift $current, JenisLayanan $jenis): ?Shift
     {
         $hari = self::HARI_BY_ISO[Carbon::parse($tanggal)->dayOfWeekIso] ?? null;
         $order = [Shift::Pagi, Shift::Sore, Shift::Malam];
@@ -365,7 +379,7 @@ class AntreanService
             // Kalau belum ada baris quota_shifts (di luar jendela sync),
             // anggap masih longgar - moveBookingToShift() memicu
             // QuotaService::resolveOrCreateQuota() saat benar-benar dipakai.
-            $blocked = $quota !== null && ($quota->status === 'cancelled' || $quota->kuota_tersisa <= 0);
+            $blocked = $quota !== null && ($quota->status === 'cancelled' || $quota->tersisaFor($jenis) <= 0);
 
             if ($blocked) {
                 continue;
@@ -406,11 +420,12 @@ class AntreanService
                 'kode_dokter' => $booking->kode_dokter,
                 'tanggal_periksa' => $tanggal,
                 'shift' => $newShift->value,
+                'jenis_layanan' => $booking->jenis_layanan->value,
                 'status' => BookingStatus::Booked->value,
             ]);
 
-            $this->quota->reserveSlot($booking->kode_dokter, $tanggal, $newShift);
-            $this->quota->releaseSlot($booking->kode_dokter, $booking->tanggal_periksa->toDateString(), $booking->shift);
+            $this->quota->reserveSlot($booking->kode_dokter, $tanggal, $newShift, $booking->jenis_layanan);
+            $this->quota->releaseSlot($booking->kode_dokter, $booking->tanggal_periksa->toDateString(), $booking->shift, $booking->jenis_layanan);
 
             $booking->update([
                 'status' => BookingStatus::Rescheduled->value,

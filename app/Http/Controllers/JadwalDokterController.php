@@ -83,6 +83,8 @@ class JadwalDokterController extends Controller
                 'jam_selesai' => substr($s->jam_selesai, 0, 5),
                 'shift' => $s->shift->value,
                 'kuota_total' => $s->kuota_total,
+                'kuota_konsultasi' => $s->kuota_konsultasi,
+                'kuota_pemeriksaan' => $s->kuota_pemeriksaan,
             ]),
             'statuses' => $statuses,
             'doctors' => $doctors->map(fn (Doctor $d) => [
@@ -107,6 +109,7 @@ class JadwalDokterController extends Controller
             'jam_mulai' => ['required', 'date_format:H:i'],
             'jam_selesai' => ['required', 'date_format:H:i', 'after:jam_mulai'],
             'kuota_total' => ['required', 'integer', 'min:0'],
+            'kuota_konsultasi' => ['required', 'integer', 'min:0', 'lte:kuota_total'],
         ]);
 
         $this->authorizeDokter($request->user(), $data['kode_dokter']);
@@ -125,6 +128,7 @@ class JadwalDokterController extends Controller
             'jam_selesai' => $data['jam_selesai'],
             'shift' => app(QuotaService::class)->bucketShift($data['jam_mulai'])->value,
             'kuota_total' => $data['kuota_total'],
+            'kuota_konsultasi' => $data['kuota_konsultasi'],
             'source' => 'manual',
             'synced_at' => now(),
         ]);
@@ -140,6 +144,7 @@ class JadwalDokterController extends Controller
             'jam_mulai' => ['required', 'date_format:H:i'],
             'jam_selesai' => ['required', 'date_format:H:i', 'after:jam_mulai'],
             'kuota_total' => ['required', 'integer', 'min:0'],
+            'kuota_konsultasi' => ['required', 'integer', 'min:0', 'lte:kuota_total'],
         ]);
 
         $doctorSchedule->update([
@@ -147,6 +152,7 @@ class JadwalDokterController extends Controller
             'jam_selesai' => $data['jam_selesai'],
             'shift' => app(QuotaService::class)->bucketShift($data['jam_mulai'])->value,
             'kuota_total' => $data['kuota_total'],
+            'kuota_konsultasi' => $data['kuota_konsultasi'],
         ]);
 
         return back()->with('success', 'Jadwal diperbarui.');

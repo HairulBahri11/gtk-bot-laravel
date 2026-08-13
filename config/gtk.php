@@ -100,4 +100,21 @@ return [
         'nama_weak_threshold' => (float) env('GTK_MATCH_NAMA_WEAK', 50),
         'nama_ibu_moderate_threshold' => (float) env('GTK_MATCH_IBU_MODERATE', 70),
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Alokasi Kuota Konsultasi
+    |--------------------------------------------------------------------------
+    |
+    | Default alokasi "kuota_konsultasi" (lihat QuotaShift/DoctorSchedule)
+    | saat baris jadwal/snapshot dibuat PERTAMA KALI - baik dari sync GTK
+    | (QuotaService::syncSchedules()) maupun jadwal manual baru di dashboard.
+    | HANYA berlaku sebagai nilai awal - setelah baris ada, admin bebas
+    | menyesuaikannya lewat dashboard (mis. kuota pemeriksaan sepi, geser ke
+    | konsultasi) dan penyesuaian itu TIDAK PERNAH ditimpa balik oleh sync
+    | berikutnya (lihat docblock QuotaService::rebuildQuotaShifts()). Ubah
+    | angka ini tidak memengaruhi jadwal yang sudah ada, hanya jadwal baru.
+    |
+    */
+    'kuota_konsultasi_default' => (int) env('GTK_KUOTA_KONSULTASI_DEFAULT', 1),
 ];

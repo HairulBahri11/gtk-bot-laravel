@@ -29,6 +29,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::prefix('pre-layanan')->group(function () {
         Route::get('/kuota', [KuotaController::class, 'index'])->name('kuota.index');
         Route::post('/kuota/sync', [KuotaController::class, 'sync'])->name('kuota.sync');
+        Route::patch('/kuota/{quotaShift}/konsultasi', [KuotaController::class, 'updateKonsultasi'])->name('kuota.update-konsultasi');
 
         Route::get('/antrean', [AntreanController::class, 'index'])->name('antrean.index');
         Route::post('/antrean/{booking}/confirm-arrival', [AntreanController::class, 'confirmArrival'])->name('antrean.confirm-arrival');

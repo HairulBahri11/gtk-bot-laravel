@@ -139,6 +139,7 @@ export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, 
         jam_mulai: '08:00',
         jam_selesai: '09:30',
         kuota_total: 15,
+        kuota_konsultasi: 1,
     });
 
     function applyFilter(e) {
@@ -264,7 +265,7 @@ export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, 
                                 />
                             </div>
                             <div className="w-28">
-                                <InputLabel value="Kuota" />
+                                <InputLabel value="Kuota Total" />
                                 <TextInput
                                     type="number"
                                     min="0"
@@ -272,6 +273,20 @@ export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, 
                                     onChange={(e) => setData('kuota_total', e.target.value)}
                                     className="mt-1 w-full"
                                 />
+                            </div>
+                            <div className="w-36">
+                                <InputLabel value="Kuota Konsultasi" />
+                                <TextInput
+                                    type="number"
+                                    min="0"
+                                    max={data.kuota_total}
+                                    value={data.kuota_konsultasi}
+                                    onChange={(e) => setData('kuota_konsultasi', e.target.value)}
+                                    className="mt-1 w-full"
+                                />
+                                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                    Sisanya ({Math.max(0, (data.kuota_total || 0) - (data.kuota_konsultasi || 0))}) untuk Pemeriksaan/Imunisasi.
+                                </p>
                             </div>
                             <div className="w-56">
                                 <InputLabel value="Kode Dokter" />
@@ -335,7 +350,7 @@ export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, 
                         <table className="min-w-full divide-y divide-gray-100 dark:divide-gray-800">
                             <thead className="border-b border-gray-200 bg-gray-50/80 dark:border-gray-800 dark:bg-gray-800/40">
                                 <tr>
-                                    {['Dokter', 'Poliklinik', 'Hari', 'Jam', 'Shift', 'Kuota', ''].map(
+                                    {['Dokter', 'Poliklinik', 'Hari', 'Jam', 'Shift', 'Kuota (Periksa/Konsul)', ''].map(
                                         (h) => (
                                             <th
                                                 key={h}
@@ -373,7 +388,10 @@ export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, 
                                             {shiftLabel[s.shift] ?? s.shift}
                                         </td>
                                         <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
-                                            {s.kuota_total}
+                                            {s.kuota_total}{' '}
+                                            <span className="text-xs text-gray-500 dark:text-gray-400">
+                                                ({s.kuota_pemeriksaan}/{s.kuota_konsultasi})
+                                            </span>
                                         </td>
                                         <td className="px-4 py-3 text-sm">
                                             <SecondaryButton onClick={() => deleteSchedule(s.id)}>
