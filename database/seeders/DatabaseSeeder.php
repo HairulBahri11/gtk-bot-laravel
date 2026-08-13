@@ -93,6 +93,10 @@ class DatabaseSeeder extends Seeder
                 'shift' => $shift->value,
                 'kuota_total' => $kuota,
                 'kuota_konsultasi' => $kuotaKonsultasiDefault,
+                // Jadwal source='gtk' (default) tidak lagi dipakai untuk
+                // booking sama sekali - data demo ini harus 'manual' supaya
+                // tetap bisa dipakai booking saat testing lokal.
+                'source' => 'manual',
                 'synced_at' => now(),
             ]));
         }

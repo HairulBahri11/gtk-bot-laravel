@@ -2,7 +2,6 @@ import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Link } from '@inertiajs/react';
 
 const subTabs = [
-    { name: 'Kuota', route: 'kuota.index', pattern: 'kuota.*' },
     { name: 'Antrean & Monitoring', route: 'antrean.index', pattern: 'antrean.*' },
     { name: 'Jadwal Dokter', route: 'jadwal.index', pattern: 'jadwal.*' },
 ];

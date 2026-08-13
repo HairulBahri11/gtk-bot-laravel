@@ -1205,9 +1205,18 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         // mis. shift "sore" dipecah 14:00-17:00 & 17:00-19:00 untuk dokter
         // berbeda), calon TERURUT deterministik (bukan sekadar urutan baris
         // DB yang tidak berarti apa-apa) sebelum dipilah lagi berdasar kuota.
+        //
+        // source='manual' WAJIB - jadwal hasil sync GTK tidak lagi dipakai
+        // untuk booking sama sekali (kejadian nyata: dr. Retno punya baris
+        // manual 15:30-17:00 DAN baris gtk basi/dokter gtk lain di
+        // poliklinik yang sama untuk shift "sore" mulai 14:00 - tanpa filter
+        // ini, bot bisa menawarkan jadwal gtk itu alih-alih jadwal dashboard
+        // yang benar). Dashboard (jadwal.store/update) adalah SATU-SATUNYA
+        // sumber kebenaran jadwal sekarang.
         $schedules = DoctorSchedule::query()
             ->where('kode_poliklinik', $kodePoliklinik)
             ->where('shift', $shift->value)
+            ->where('source', 'manual')
             ->orderBy('jam_mulai')
             ->get();
 
@@ -1302,6 +1311,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             ->where('kode_poliklinik', $kodePoliklinik)
             ->where('shift', $shift->value)
             ->where('hari', $hari)
+            ->where('source', 'manual')
             ->orderBy('jam_mulai')
             ->get();
 
@@ -1334,6 +1344,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         $hariTersedia = DoctorSchedule::query()
             ->where('kode_poliklinik', $kodePoliklinik)
             ->where('shift', $shift->value)
+            ->where('source', 'manual')
             ->pluck('hari')
             ->unique();
 

@@ -125,6 +125,7 @@ class NotifyShiftChangeJob implements ShouldQueue
             ->where('kode_dokter', $kodeDokter)
             ->where('shift', $shift->value)
             ->where('hari', $hari)
+            ->where('source', 'manual')
             ->first();
 
         if (! $schedule) {

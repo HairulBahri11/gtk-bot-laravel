@@ -139,6 +139,7 @@ class ProcessIncomingDoctorMessage implements ShouldQueue
             ->where('kode_dokter', $this->kodeDokter)
             ->where('shift', $shift->value)
             ->where('hari', $hari)
+            ->where('source', 'manual')
             ->exists();
     }
 

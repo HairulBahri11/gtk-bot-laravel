@@ -621,6 +621,10 @@ class WhatsappWebhookTest extends TestCase
             'jam_selesai' => '12:00',
             'shift' => 'pagi',
             'kuota_total' => 5,
+            // source='manual' WAJIB - jadwal source='gtk' tidak lagi dipakai
+            // untuk booking sama sekali (lihat filter di findNearestSlot()/
+            // findSlotOnDate()/AntreanService::createBooking() dkk).
+            'source' => 'manual',
         ]);
 
         QuotaShift::create([

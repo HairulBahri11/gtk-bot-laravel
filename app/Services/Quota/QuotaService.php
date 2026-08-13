@@ -184,9 +184,20 @@ class QuotaService
         }
     }
 
+    /**
+     * source='manual' WAJIB - snapshot harian hanya dibangun dari jadwal
+     * dashboard, tidak lagi dari hasil sync GTK. Ini juga menutup bug nyata
+     * yang pernah terjadi: satu kode_dokter yang punya baris manual DAN
+     * baris gtk (basi, sebelum jadwal manualnya dibuat) untuk kombinasi
+     * hari+shift yang SAMA menyebabkan tabrakan key di $rows[] di bawah -
+     * baris mana yang "menang" tidak deterministik (DoctorSchedule::all()
+     * tanpa orderBy), sampai pernah membuat kuota_total snapshot dobel
+     * (mis. 30, bukan 15) untuk dokter yang sama. Dengan filter ini, hanya
+     * SATU baris (manual) yang mungkin ada per kode_dokter+hari+shift.
+     */
     protected function rebuildQuotaShifts(int $daysAhead): void
     {
-        $schedules = DoctorSchedule::all();
+        $schedules = DoctorSchedule::where('source', 'manual')->get();
         $today = Carbon::today();
         $lastDate = $today->copy()->addDays($daysAhead);
 
@@ -484,6 +495,7 @@ class QuotaService
             ->where('kode_dokter', $kodeDokter)
             ->where('shift', $shift->value)
             ->where('hari', $hari)
+            ->where('source', 'manual')
             ->first();
 
         if (! $schedule) {

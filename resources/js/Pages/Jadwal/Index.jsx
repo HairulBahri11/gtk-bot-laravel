@@ -129,6 +129,104 @@ function ShiftStatusCard({ combo, statusRow, tanggal, isDokter }) {
     );
 }
 
+// Baris tabel jadwal, dengan mode "ubah kuota" inline - jam/hari/dokter/poli
+// tidak bisa diubah lewat sini (harus hapus+tambah), hanya kuota_total &
+// kuota_konsultasi lewat endpoint PUT jadwal.update yang sudah ada.
+function ScheduleRow({ schedule }) {
+    const [editing, setEditing] = useState(false);
+    const { data, setData, put, processing, reset, errors, clearErrors } = useForm({
+        jam_mulai: schedule.jam_mulai,
+        jam_selesai: schedule.jam_selesai,
+        kuota_total: schedule.kuota_total,
+        kuota_konsultasi: schedule.kuota_konsultasi,
+    });
+
+    function submitKuota(e) {
+        e.preventDefault();
+        put(route('jadwal.update', schedule.id), {
+            preserveScroll: true,
+            onSuccess: () => setEditing(false),
+        });
+    }
+
+    function cancelEdit() {
+        reset();
+        clearErrors();
+        setEditing(false);
+    }
+
+    function deleteSchedule() {
+        if (! confirm('Hapus baris jadwal ini?')) return;
+        router.delete(route('jadwal.destroy', schedule.id), { preserveScroll: true });
+    }
+
+    return (
+        <tr className="hover:bg-gray-50/80 dark:hover:bg-gray-800/40">
+            <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">{schedule.nama_dokter}</td>
+            <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">{schedule.nama_poliklinik}</td>
+            <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">{schedule.hari}</td>
+            <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
+                {schedule.jam_mulai}-{schedule.jam_selesai}
+            </td>
+            <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
+                {shiftLabel[schedule.shift] ?? schedule.shift}
+            </td>
+            <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
+                {editing ? (
+                    <form onSubmit={submitKuota} className="flex flex-wrap items-center gap-2">
+                        <div className="flex items-center gap-1">
+                            <input
+                                type="number"
+                                min="0"
+                                value={data.kuota_total}
+                                onChange={(e) => setData('kuota_total', e.target.value)}
+                                aria-label="Kuota Total"
+                                className="w-16 rounded-md border-gray-300 text-sm shadow-sm focus:border-[#2a78d6] focus:ring-[#2a78d6] dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                            />
+                            <span className="text-xs text-gray-400">/</span>
+                            <input
+                                type="number"
+                                min="0"
+                                max={data.kuota_total}
+                                value={data.kuota_konsultasi}
+                                onChange={(e) => setData('kuota_konsultasi', e.target.value)}
+                                aria-label="Kuota Konsultasi"
+                                className="w-16 rounded-md border-gray-300 text-sm shadow-sm focus:border-[#2a78d6] focus:ring-[#2a78d6] dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                            />
+                        </div>
+                        <PrimaryButton type="submit" disabled={processing}>
+                            Simpan
+                        </PrimaryButton>
+                        <SecondaryButton type="button" onClick={cancelEdit} disabled={processing}>
+                            Batal
+                        </SecondaryButton>
+                        {(errors.kuota_total || errors.kuota_konsultasi) && (
+                            <p className="w-full text-xs text-red-600">
+                                Kuota konsultasi tidak boleh melebihi kuota total.
+                            </p>
+                        )}
+                    </form>
+                ) : (
+                    <>
+                        {schedule.kuota_total}{' '}
+                        <span className="text-xs text-gray-500 dark:text-gray-400">
+                            ({schedule.kuota_pemeriksaan}/{schedule.kuota_konsultasi})
+                        </span>
+                    </>
+                )}
+            </td>
+            <td className="px-4 py-3 text-sm">
+                {! editing && (
+                    <div className="flex flex-wrap gap-2">
+                        <SecondaryButton onClick={() => setEditing(true)}>Ubah Kuota</SecondaryButton>
+                        <SecondaryButton onClick={deleteSchedule}>Hapus</SecondaryButton>
+                    </div>
+                )}
+            </td>
+        </tr>
+    );
+}
+
 export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, filters, isDokter }) {
     const [tanggal, setTanggal] = useState(filters.tanggal);
 
@@ -150,11 +248,6 @@ export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, 
     function submitSchedule(e) {
         e.preventDefault();
         post(route('jadwal.store'), { preserveScroll: true, onSuccess: () => reset('jam_mulai', 'jam_selesai') });
-    }
-
-    function deleteSchedule(id) {
-        if (! confirm('Hapus baris jadwal ini?')) return;
-        router.delete(route('jadwal.destroy', id), { preserveScroll: true });
     }
 
     const statusByKey = useMemo(
@@ -231,96 +324,100 @@ export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, 
                             Tambah Jadwal Mingguan
                         </h3>
 
-                        <form onSubmit={submitSchedule} className="flex flex-wrap items-end gap-3">
-                            <div>
-                                <InputLabel value="Hari" />
-                                <select
-                                    value={data.hari}
-                                    onChange={(e) => setData('hari', e.target.value)}
-                                    className="mt-1 rounded-lg border-gray-300 text-sm shadow-sm focus:border-[#2a78d6] focus:ring-[#2a78d6] dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-                                >
-                                    {hariOptions.map((h) => (
-                                        <option key={h} value={h}>
-                                            {h}
+                        <form onSubmit={submitSchedule} className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
+                                <div>
+                                    <InputLabel value="Hari" />
+                                    <select
+                                        value={data.hari}
+                                        onChange={(e) => setData('hari', e.target.value)}
+                                        className="mt-1 w-full rounded-lg border-gray-300 text-sm shadow-sm focus:border-[#2a78d6] focus:ring-[#2a78d6] dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                                    >
+                                        {hariOptions.map((h) => (
+                                            <option key={h} value={h}>
+                                                {h}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div>
+                                    <InputLabel value="Jam Mulai" />
+                                    <TextInput
+                                        type="time"
+                                        value={data.jam_mulai}
+                                        onChange={(e) => setData('jam_mulai', e.target.value)}
+                                        className="mt-1 w-full"
+                                    />
+                                </div>
+                                <div>
+                                    <InputLabel value="Jam Selesai" />
+                                    <TextInput
+                                        type="time"
+                                        value={data.jam_selesai}
+                                        onChange={(e) => setData('jam_selesai', e.target.value)}
+                                        className="mt-1 w-full"
+                                    />
+                                </div>
+                                <div>
+                                    <InputLabel value="Kuota Total" />
+                                    <TextInput
+                                        type="number"
+                                        min="0"
+                                        value={data.kuota_total}
+                                        onChange={(e) => setData('kuota_total', e.target.value)}
+                                        className="mt-1 w-full"
+                                    />
+                                </div>
+                                <div>
+                                    <InputLabel value="Kuota Konsultasi" />
+                                    <TextInput
+                                        type="number"
+                                        min="0"
+                                        max={data.kuota_total}
+                                        value={data.kuota_konsultasi}
+                                        onChange={(e) => setData('kuota_konsultasi', e.target.value)}
+                                        className="mt-1 w-full"
+                                    />
+                                    <p className="mt-1 text-xs leading-snug text-gray-500 dark:text-gray-400">
+                                        Sisanya (
+                                        {Math.max(0, (data.kuota_total || 0) - (data.kuota_konsultasi || 0))}) untuk
+                                        Pemeriksaan/Imunisasi.
+                                    </p>
+                                </div>
+                                <div>
+                                    <InputLabel value="Kode Dokter" />
+                                    <select
+                                        value={data.kode_dokter}
+                                        onChange={(e) => setData('kode_dokter', e.target.value)}
+                                        className="mt-1 w-full rounded-lg border-gray-300 text-sm shadow-sm focus:border-[#2a78d6] focus:ring-[#2a78d6] dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                                    >
+                                        <option value="" disabled>
+                                            Pilih dokter
                                         </option>
-                                    ))}
-                                </select>
-                            </div>
-                            <div>
-                                <InputLabel value="Jam Mulai" />
-                                <TextInput
-                                    type="time"
-                                    value={data.jam_mulai}
-                                    onChange={(e) => setData('jam_mulai', e.target.value)}
-                                    className="mt-1"
-                                />
-                            </div>
-                            <div>
-                                <InputLabel value="Jam Selesai" />
-                                <TextInput
-                                    type="time"
-                                    value={data.jam_selesai}
-                                    onChange={(e) => setData('jam_selesai', e.target.value)}
-                                    className="mt-1"
-                                />
-                            </div>
-                            <div className="w-28">
-                                <InputLabel value="Kuota Total" />
-                                <TextInput
-                                    type="number"
-                                    min="0"
-                                    value={data.kuota_total}
-                                    onChange={(e) => setData('kuota_total', e.target.value)}
-                                    className="mt-1 w-full"
-                                />
-                            </div>
-                            <div className="w-36">
-                                <InputLabel value="Kuota Konsultasi" />
-                                <TextInput
-                                    type="number"
-                                    min="0"
-                                    max={data.kuota_total}
-                                    value={data.kuota_konsultasi}
-                                    onChange={(e) => setData('kuota_konsultasi', e.target.value)}
-                                    className="mt-1 w-full"
-                                />
-                                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                    Sisanya ({Math.max(0, (data.kuota_total || 0) - (data.kuota_konsultasi || 0))}) untuk Pemeriksaan/Imunisasi.
-                                </p>
-                            </div>
-                            <div className="w-56">
-                                <InputLabel value="Kode Dokter" />
-                                <select
-                                    value={data.kode_dokter}
-                                    onChange={(e) => setData('kode_dokter', e.target.value)}
-                                    className="mt-1 w-full rounded-lg border-gray-300 text-sm shadow-sm focus:border-[#2a78d6] focus:ring-[#2a78d6] dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-                                >
-                                    <option value="" disabled>
-                                        Pilih dokter
-                                    </option>
-                                    {doctors.map((d) => (
-                                        <option key={d.kode_dokter} value={d.kode_dokter}>
-                                            {d.nama_dokter} ({d.kode_dokter})
+                                        {doctors.map((d) => (
+                                            <option key={d.kode_dokter} value={d.kode_dokter}>
+                                                {d.nama_dokter} ({d.kode_dokter})
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div>
+                                    <InputLabel value="Poliklinik" />
+                                    <select
+                                        value={data.kode_poliklinik}
+                                        onChange={(e) => setData('kode_poliklinik', e.target.value)}
+                                        className="mt-1 w-full rounded-lg border-gray-300 text-sm shadow-sm focus:border-[#2a78d6] focus:ring-[#2a78d6] dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                                    >
+                                        <option value="" disabled>
+                                            Pilih poliklinik
                                         </option>
-                                    ))}
-                                </select>
-                            </div>
-                            <div className="w-56">
-                                <InputLabel value="Poliklinik" />
-                                <select
-                                    value={data.kode_poliklinik}
-                                    onChange={(e) => setData('kode_poliklinik', e.target.value)}
-                                    className="mt-1 w-full rounded-lg border-gray-300 text-sm shadow-sm focus:border-[#2a78d6] focus:ring-[#2a78d6] dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-                                >
-                                    <option value="" disabled>
-                                        Pilih poliklinik
-                                    </option>
-                                    {poliklinik.map((p) => (
-                                        <option key={p.kode_poliklinik} value={p.kode_poliklinik}>
-                                            {p.nama_poliklinik}
-                                        </option>
-                                    ))}
-                                </select>
+                                        {poliklinik.map((p) => (
+                                            <option key={p.kode_poliklinik} value={p.kode_poliklinik}>
+                                                {p.nama_poliklinik}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
                             </div>
                             <PrimaryButton
                                 type="submit"
@@ -371,34 +468,7 @@ export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, 
                                     </tr>
                                 )}
                                 {schedules.map((s) => (
-                                    <tr key={s.id} className="hover:bg-gray-50/80 dark:hover:bg-gray-800/40">
-                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
-                                            {s.nama_dokter}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
-                                            {s.nama_poliklinik}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
-                                            {s.hari}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
-                                            {s.jam_mulai}-{s.jam_selesai}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
-                                            {shiftLabel[s.shift] ?? s.shift}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
-                                            {s.kuota_total}{' '}
-                                            <span className="text-xs text-gray-500 dark:text-gray-400">
-                                                ({s.kuota_pemeriksaan}/{s.kuota_konsultasi})
-                                            </span>
-                                        </td>
-                                        <td className="px-4 py-3 text-sm">
-                                            <SecondaryButton onClick={() => deleteSchedule(s.id)}>
-                                                Hapus
-                                            </SecondaryButton>
-                                        </td>
-                                    </tr>
+                                    <ScheduleRow key={s.id} schedule={s} />
                                 ))}
                             </tbody>
                         </table>

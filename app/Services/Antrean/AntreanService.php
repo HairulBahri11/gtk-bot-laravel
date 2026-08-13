@@ -57,11 +57,16 @@ class AntreanService
         $hariIso = Carbon::parse($tanggal)->dayOfWeekIso;
         $hari = self::HARI_BY_ISO[$hariIso] ?? null;
 
+        // source='manual' WAJIB - jadwal hasil sync GTK tidak lagi dianggap
+        // valid untuk booking sama sekali (lihat catatan serupa di
+        // findNearestSlot()/findSlotOnDate()) - titik penjagaan terakhir ini
+        // WAJIB menegakkan aturan yang sama, bukan cuma caller-nya.
         $jadwalValid = DoctorSchedule::query()
             ->where('kode_dokter', $data['kode_dokter'])
             ->where('kode_poliklinik', $data['kode_poliklinik'])
             ->where('shift', $shift->value)
             ->where('hari', $hari)
+            ->where('source', 'manual')
             ->whereHas('doctor', fn ($q) => $q->where('is_active', true))
             ->exists();
 
@@ -368,6 +373,7 @@ class AntreanService
                 ->where('kode_dokter', $kodeDokter)
                 ->where('shift', $candidate->value)
                 ->where('hari', $hari)
+                ->where('source', 'manual')
                 ->exists();
 
             if (! $hasSchedule) {

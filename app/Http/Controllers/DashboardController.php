@@ -99,6 +99,7 @@ class DashboardController extends Controller
             ->with(['poliklinik', 'doctor'])
             ->when($kodeDokter, fn ($q) => $q->where('kode_dokter', $kodeDokter))
             ->where('hari', $hariIni)
+            ->where('source', 'manual')
             ->get();
 
         $quotaByDokterShift = $quotaToday->keyBy(fn (QuotaShift $q) => $q->kode_dokter.'|'.$q->shift->value);
