@@ -18,11 +18,13 @@ use Inertia\Inertia;
 use Inertia\Response;
 
 /**
- * "Jadwal Dokter": kelola jadwal mingguan MANUAL (source='manual', mis. dr.
- * Retno Wulandari, SpA - GTK /jadwaldokter tidak punya data untuknya) +
- * status harian per shift (buka/dibatalkan/delay). Jadwal hasil sinkronisasi
- * GTK ('source'='gtk') sengaja tidak bisa disentuh dari sini sama sekali -
- * itu tetap murni dikelola oleh gtk:sync-quota.
+ * "Jadwal Dokter": kelola jadwal mingguan (source='manual') + status harian
+ * per shift (buka/dibatalkan/delay). Dashboard ini SATU-SATUNYA sumber
+ * jadwal yang dipakai untuk booking - gtk:sync-quota tidak lagi
+ * menyinkronkan jadwal dari GTK sama sekali (lihat QuotaService::
+ * syncFromGtk()), baris source='gtk' lama (kalau masih ada dari sebelum
+ * perubahan ini) sengaja diabaikan di seluruh query booking & tidak pernah
+ * bisa diedit dari sini.
  */
 class JadwalDokterController extends Controller
 {
@@ -68,6 +70,19 @@ class JadwalDokterController extends Controller
                 'status' => $q->status,
                 'delay_minutes' => $q->delay_minutes,
                 'reason' => $q->reason,
+                // Kuota TERSEDIA (bukan alokasi) untuk tanggal ini secara
+                // spesifik - baru bisa dihitung dari snapshot harian
+                // (quota_shifts), bukan dari template mingguan
+                // (doctor_schedules) yang ditampilkan di tabel bawah.
+                'kuota_total' => $q->kuota_total,
+                'kuota_terpakai' => $q->kuota_terpakai,
+                'kuota_tersisa' => $q->kuota_tersisa,
+                'kuota_pemeriksaan' => $q->kuota_pemeriksaan,
+                'kuota_terpakai_pemeriksaan' => $q->kuota_terpakai_pemeriksaan,
+                'kuota_tersisa_pemeriksaan' => $q->kuota_tersisa_pemeriksaan,
+                'kuota_konsultasi' => $q->kuota_konsultasi,
+                'kuota_terpakai_konsultasi' => $q->kuota_terpakai_konsultasi,
+                'kuota_tersisa_konsultasi' => $q->kuota_tersisa_konsultasi,
             ])
             ->values();
 

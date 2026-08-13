@@ -27,11 +27,30 @@ class QuotaService
      * Tarik master poliklinik, dokter aktif, dan jadwal dokter dari GTK,
      * lalu bangun ulang snapshot kuota untuk N hari ke depan.
      */
+    /**
+     * syncSchedules() SENGAJA tidak lagi dipanggil di sini - jadwal dokter
+     * sekarang sepenuhnya dikelola manual dari dashboard (Jadwal Dokter),
+     * bukan disinkronkan dari GTK lagi (lihat filter source='manual' di
+     * seluruh query DoctorSchedule yang menentukan booking). Menariknya
+     * tetap dari GTK cuma menambah baris source='gtk' yang tidak pernah
+     * dibaca siapa pun - sia-sia & berisiko menambah kebingungan data
+     * (kejadian nyata: baris gtk basi pernah bertabrakan dengan jadwal
+     * manual dokter yang sama, lihat docblock rebuildQuotaShifts()).
+     *
+     * rebuildQuotaShifts() TETAP dipanggil - method itu murni proyeksi
+     * lokal dari template doctor_schedules (yang sekarang 100% manual) ke
+     * snapshot harian quota_shifts, TIDAK memanggil GTK sama sekali, dan
+     * tetap wajib jalan berkala supaya tanggal-tanggal mendatang punya
+     * baris quota_shifts (dipakai hasAvailability()/reserveSlot() dkk).
+     *
+     * syncPoliklinik()/syncDoctors() TETAP dipanggil - keduanya soal data
+     * master (status aktif dokter/poliklinik), bukan jadwal, dan belum
+     * diminta untuk dihentikan.
+     */
     public function syncFromGtk(int $daysAhead = 14): void
     {
         $this->syncPoliklinik();
         $this->syncDoctors();
-        $this->syncSchedules();
         $this->rebuildQuotaShifts($daysAhead);
     }
 

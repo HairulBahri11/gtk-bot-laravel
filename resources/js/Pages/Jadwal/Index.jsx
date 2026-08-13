@@ -39,6 +39,17 @@ function StatusBadge({ status, delayMinutes }) {
     );
 }
 
+function QuotaStat({ label, tersisa, total }) {
+    return (
+        <div className="rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-800/60">
+            <p className="text-xs text-gray-500 dark:text-gray-400">{label}</p>
+            <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                {tersisa} <span className="font-normal text-gray-400 dark:text-gray-500">/ {total}</span>
+            </p>
+        </div>
+    );
+}
+
 function ShiftStatusCard({ combo, statusRow, tanggal, isDokter }) {
     const [reason, setReason] = useState('');
     const [delayMinutes, setDelayMinutes] = useState(30);
@@ -77,6 +88,25 @@ function ShiftStatusCard({ combo, statusRow, tanggal, isDokter }) {
                     delayMinutes={statusRow?.delay_minutes}
                 />
             </div>
+
+            {statusRow ? (
+                <div className="grid grid-cols-2 gap-2">
+                    <QuotaStat
+                        label="Pemeriksaan/Imunisasi tersisa"
+                        tersisa={statusRow.kuota_tersisa_pemeriksaan}
+                        total={statusRow.kuota_pemeriksaan}
+                    />
+                    <QuotaStat
+                        label="Konsultasi tersisa"
+                        tersisa={statusRow.kuota_tersisa_konsultasi}
+                        total={statusRow.kuota_konsultasi}
+                    />
+                </div>
+            ) : (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                    Kuota untuk tanggal ini belum tersinkron dari jadwal - coba lagi sesaat lagi.
+                </p>
+            )}
 
             {statusRow?.reason && (
                 <p className="text-xs text-gray-500 dark:text-gray-400">
