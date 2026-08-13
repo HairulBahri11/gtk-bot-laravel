@@ -8,8 +8,18 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-// "Kuota background" - §3.1 langkah 4 PRD.
-Schedule::command('gtk:sync-quota')->everyTenMinutes()->withoutOverlapping();
+// "Kuota background" - §3.1 langkah 4 PRD. gtk:sync-quota SENGAJA tidak lagi
+// dijadwalkan di sini - jadwal, kuota, poliklinik, dan dokter sekarang
+// sepenuhnya dikelola manual dari dashboard, tidak perlu sinkronisasi
+// otomatis dari GTK lagi (lihat QuotaService::syncFromGtk()). Command itu
+// masih ada & bisa dijalankan manual (`php artisan gtk:sync-quota`) kalau
+// suatu saat perlu refresh data dokter/poliklinik dari GTK.
+//
+// quota:rebuild-shifts TETAP dijadwalkan - method itu TIDAK memanggil GTK
+// sama sekali, murni proyeksi lokal dari jadwal dashboard (doctor_schedules)
+// ke snapshot harian (quota_shifts), dan wajib tetap jalan berkala supaya
+// tanggal-tanggal mendatang punya data kuota.
+Schedule::command('quota:rebuild-shifts')->everyTenMinutes()->withoutOverlapping();
 
 // Pengingat Otomatis (H-1 hari/3 jam/1 jam) - dipindah ke sistem baru berbasis
 // tabel kunjungan_reminder/reminder_log di Supabase (lihat

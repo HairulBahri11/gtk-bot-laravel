@@ -213,8 +213,16 @@ class QuotaService
      * tanpa orderBy), sampai pernah membuat kuota_total snapshot dobel
      * (mis. 30, bukan 15) untuk dokter yang sama. Dengan filter ini, hanya
      * SATU baris (manual) yang mungkin ada per kode_dokter+hari+shift.
+     *
+     * PUBLIC (bukan protected) supaya bisa dipanggil langsung dari command
+     * quota:rebuild-shifts (app/Console/Commands/RebuildQuotaShifts.php) -
+     * method ini SAMA SEKALI TIDAK memanggil API GTK, murni proyeksi lokal
+     * dari doctor_schedules ke quota_shifts, jadi sengaja dipisah dari
+     * gtk:sync-quota supaya tetap bisa dijadwalkan otomatis walau seluruh
+     * sinkronisasi ke GTK (poliklinik/dokter/jadwal) sudah dimatikan dari
+     * scheduler (lihat routes/console.php).
      */
-    protected function rebuildQuotaShifts(int $daysAhead): void
+    public function rebuildQuotaShifts(int $daysAhead): void
     {
         $schedules = DoctorSchedule::where('source', 'manual')->get();
         $today = Carbon::today();
