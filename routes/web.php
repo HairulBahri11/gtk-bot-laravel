@@ -23,13 +23,15 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // Tab utama 1: Overview.
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
-    // Tab utama 2: Pre-Layanan (sub-tab: Antrean & Monitoring / Jadwal Dokter).
-    // Tab "Kuota" (sinkronisasi dari API GTK) sudah tidak dipakai lagi -
-    // jadwal & kuota sekarang diatur manual dari dashboard Jadwal Dokter,
-    // bukan dari sync GTK - lihat catatan di JadwalDokterController & filter
-    // source='manual' di seluruh query DoctorSchedule yang menentukan
-    // booking.
-    Route::redirect('/pre-layanan', '/pre-layanan/jadwal');
+    // Tab utama 2: Pre-Layanan (sub-tab: Antrean & Monitoring / Kuota).
+    // Jadwal Dokter sengaja dipindah ke top navbar-nya sendiri (lihat
+    // AuthenticatedLayout) - bukan lagi sub-tab Pre-Layanan, walau URL-nya
+    // tetap di bawah prefix /pre-layanan (tidak perlu pindah route, cukup
+    // navigasinya saja). Jadwal & kuota sekarang diatur manual dari
+    // dashboard Jadwal Dokter, bukan dari sync GTK - lihat catatan di
+    // JadwalDokterController & filter source='manual' di seluruh query
+    // DoctorSchedule yang menentukan booking.
+    Route::redirect('/pre-layanan', '/pre-layanan/antrean');
 
     Route::prefix('pre-layanan')->group(function () {
         Route::get('/kuota', [KuotaController::class, 'index'])->name('kuota.index');

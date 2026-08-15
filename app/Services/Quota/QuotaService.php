@@ -181,10 +181,13 @@ class QuotaService
                         'kuota_total' => $jadwal['kuota'] ?? 0,
                         // GTK tidak tahu konsep alokasi konsultasi sama sekali -
                         // nilai ini HANYA dipakai saat baris ini pertama kali
-                        // dibuat (lihat $updateColumns di bawah, kuota_konsultasi
-                        // sengaja tidak diikutkan supaya penyesuaian dashboard
-                        // tidak ditimpa balik tiap sync).
-                        'kuota_konsultasi' => (int) config('gtk.kuota_konsultasi_default'),
+                        // dibuat (lihat $updateColumns di bawah, kolom alokasi
+                        // konsultasi sengaja tidak diikutkan supaya penyesuaian
+                        // dashboard tidak ditimpa balik tiap sync). Default GTK
+                        // diperlakukan sebagai Tumbuh Kembang (konsisten dengan
+                        // migration 2026_08_15_000001) - Gizi mulai dari 0.
+                        'kuota_konsultasi_gizi' => 0,
+                        'kuota_konsultasi_tumbuh_kembang' => (int) config('gtk.kuota_konsultasi_default'),
                         'source' => 'gtk',
                         'synced_at' => $now,
                     ];
@@ -254,8 +257,9 @@ class QuotaService
                     'kuota_total' => $schedule->kuota_total,
                     // Hanya dipakai saat baris snapshot ini PERTAMA KALI dibuat -
                     // lihat $updateColumns di bawah & docblock migration
-                    // 2026_08_13_000002_add_kuota_konsultasi_to_quota_shifts_table.
-                    'kuota_konsultasi' => $schedule->kuota_konsultasi,
+                    // 2026_08_15_000002_split_kuota_konsultasi_gizi_tumbuh_kembang_quota_shifts.
+                    'kuota_konsultasi_gizi' => $schedule->kuota_konsultasi_gizi,
+                    'kuota_konsultasi_tumbuh_kembang' => $schedule->kuota_konsultasi_tumbuh_kembang,
                 ];
             }
         }
@@ -286,7 +290,8 @@ class QuotaService
             ->get();
 
         $terpakaiMap = [];
-        $terpakaiKonsultasiMap = [];
+        $terpakaiGiziMap = [];
+        $terpakaiTumbuhKembangMap = [];
 
         foreach ($terpakaiRows as $row) {
             $key = $row->kode_dokter.'|'.Carbon::parse($row->tanggal)->toDateString().'|'.$row->shift;
@@ -294,8 +299,10 @@ class QuotaService
 
             $terpakaiMap[$key] = ($terpakaiMap[$key] ?? 0) + $total;
 
-            if ($row->jenis_layanan === JenisLayanan::Konsultasi->value) {
-                $terpakaiKonsultasiMap[$key] = $total;
+            if ($row->jenis_layanan === JenisLayanan::KonsultasiGizi->value) {
+                $terpakaiGiziMap[$key] = $total;
+            } elseif ($row->jenis_layanan === JenisLayanan::KonsultasiTumbuhKembang->value) {
+                $terpakaiTumbuhKembangMap[$key] = $total;
             }
         }
 
@@ -304,7 +311,8 @@ class QuotaService
         foreach ($rows as &$row) {
             $key = $row['kode_dokter'].'|'.$row['tanggal'].'|'.$row['shift'];
             $row['kuota_terpakai'] = (int) ($terpakaiMap[$key] ?? 0);
-            $row['kuota_terpakai_konsultasi'] = (int) ($terpakaiKonsultasiMap[$key] ?? 0);
+            $row['kuota_terpakai_konsultasi_gizi'] = (int) ($terpakaiGiziMap[$key] ?? 0);
+            $row['kuota_terpakai_konsultasi_tumbuh_kembang'] = (int) ($terpakaiTumbuhKembangMap[$key] ?? 0);
             $row['last_synced_at'] = $now;
         }
         unset($row);
@@ -313,11 +321,12 @@ class QuotaService
             QuotaShift::query()->upsert(
                 $chunk,
                 ['kode_dokter', 'tanggal', 'shift'],
-                // kuota_konsultasi SENGAJA tidak diikutkan (lihat komentar saat
-                // baris ini dibangun di atas) - kuota_terpakai_konsultasi WAJIB
-                // ikut, sama seperti kuota_terpakai: keduanya fakta terpakai
-                // yang dihitung ulang, bukan target yang diatur admin.
-                ['kode_poliklinik', 'kuota_total', 'kuota_terpakai', 'kuota_terpakai_konsultasi', 'last_synced_at'],
+                // kuota_konsultasi_gizi/kuota_konsultasi_tumbuh_kembang SENGAJA
+                // tidak diikutkan (lihat komentar saat baris ini dibangun di
+                // atas) - kedua kolom kuota_terpakai_konsultasi_* WAJIB ikut,
+                // sama seperti kuota_terpakai: semuanya fakta terpakai yang
+                // dihitung ulang, bukan target yang diatur admin.
+                ['kode_poliklinik', 'kuota_total', 'kuota_terpakai', 'kuota_terpakai_konsultasi_gizi', 'kuota_terpakai_konsultasi_tumbuh_kembang', 'last_synced_at'],
             );
         }
     }
@@ -401,6 +410,22 @@ class QuotaService
             ->all();
     }
 
+    /**
+     * Kolom kuota_terpakai_* tambahan yang wajib ikut naik/turun bersamaan
+     * kuota_terpakai (total) untuk kategori konsultasi tertentu - null untuk
+     * Pemeriksaan karena pool-nya murni turunan (kuota_total dikurangi kedua
+     * alokasi konsultasi, lihat QuotaShift::kuotaFor()), tidak punya kolom
+     * terpakai sendiri.
+     */
+    protected function terpakaiKategoriColumn(JenisLayanan $jenis): ?string
+    {
+        return match ($jenis) {
+            JenisLayanan::KonsultasiGizi => 'kuota_terpakai_konsultasi_gizi',
+            JenisLayanan::KonsultasiTumbuhKembang => 'kuota_terpakai_konsultasi_tumbuh_kembang',
+            JenisLayanan::Pemeriksaan => null,
+        };
+    }
+
     public function reserveSlot(string $kodeDokter, string $tanggal, Shift $shift, JenisLayanan $jenis, int $amount = 1): void
     {
         $query = DB::table('quota_shifts')
@@ -408,10 +433,12 @@ class QuotaService
             ->whereDate('tanggal', $tanggal)
             ->where('shift', $shift->value);
 
-        if ($jenis === JenisLayanan::Konsultasi) {
+        $kolom = $this->terpakaiKategoriColumn($jenis);
+
+        if ($kolom) {
             // kuota_terpakai (total) WAJIB ikut naik bersamaan - ia tetap
-            // representasi pemakaian gabungan kedua kategori.
-            $query->incrementEach(['kuota_terpakai' => $amount, 'kuota_terpakai_konsultasi' => $amount]);
+            // representasi pemakaian gabungan ketiga kategori.
+            $query->incrementEach(['kuota_terpakai' => $amount, $kolom => $amount]);
         } else {
             $query->increment('kuota_terpakai', $amount);
         }
@@ -427,8 +454,10 @@ class QuotaService
 
         $quota->kuota_terpakai = max(0, $quota->kuota_terpakai - $amount);
 
-        if ($jenis === JenisLayanan::Konsultasi) {
-            $quota->kuota_terpakai_konsultasi = max(0, $quota->kuota_terpakai_konsultasi - $amount);
+        $kolom = $this->terpakaiKategoriColumn($jenis);
+
+        if ($kolom) {
+            $quota->{$kolom} = max(0, $quota->{$kolom} - $amount);
         }
 
         $quota->save();
@@ -439,11 +468,12 @@ class QuotaService
      * terkait, untuk menampung promosi waitlist setelah No-Show.
      *
      * kuota_total selalu bertambah $amount (pool gabungan memang membesar).
-     * Untuk No-Show kategori Konsultasi, kuota_konsultasi WAJIB ikut
-     * bertambah $amount juga - kalau tidak, kuota_pemeriksaan turunan
-     * (kuota_total - kuota_konsultasi) yang justru diam-diam membesar,
-     * padahal buffer ini seharusnya menambah ruang untuk mempromosikan
-     * waitlist KONSULTASI, bukan pemeriksaan.
+     * Untuk No-Show kategori Konsultasi Gizi/Tumbuh Kembang, kolom alokasi
+     * kategori itu WAJIB ikut bertambah $amount juga - kalau tidak,
+     * kuota_pemeriksaan turunan (kuota_total dikurangi kedua alokasi
+     * konsultasi) yang justru diam-diam membesar, padahal buffer ini
+     * seharusnya menambah ruang untuk mempromosikan waitlist kategori
+     * konsultasi yang sama, bukan pemeriksaan.
      */
     public function shiftBuffer(string $kodeDokter, string $tanggal, Shift $shift, JenisLayanan $jenis, int $amount): void
     {
@@ -455,8 +485,14 @@ class QuotaService
 
         $quota->kuota_total += $amount;
 
-        if ($jenis === JenisLayanan::Konsultasi) {
-            $quota->kuota_konsultasi += $amount;
+        $kolomAlokasi = match ($jenis) {
+            JenisLayanan::KonsultasiGizi => 'kuota_konsultasi_gizi',
+            JenisLayanan::KonsultasiTumbuhKembang => 'kuota_konsultasi_tumbuh_kembang',
+            JenisLayanan::Pemeriksaan => null,
+        };
+
+        if ($kolomAlokasi) {
+            $quota->{$kolomAlokasi} += $amount;
         }
 
         $quota->save();
@@ -536,8 +572,10 @@ class QuotaService
             'shift' => $shift->value,
             'kuota_total' => $schedule->kuota_total,
             'kuota_terpakai' => 0,
-            'kuota_konsultasi' => $schedule->kuota_konsultasi,
-            'kuota_terpakai_konsultasi' => 0,
+            'kuota_konsultasi_gizi' => $schedule->kuota_konsultasi_gizi,
+            'kuota_terpakai_konsultasi_gizi' => 0,
+            'kuota_konsultasi_tumbuh_kembang' => $schedule->kuota_konsultasi_tumbuh_kembang,
+            'kuota_terpakai_konsultasi_tumbuh_kembang' => 0,
         ]);
     }
 

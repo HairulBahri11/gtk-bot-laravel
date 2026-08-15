@@ -92,7 +92,8 @@ class DatabaseSeeder extends Seeder
                 'jam_selesai' => $jamSelesai,
                 'shift' => $shift->value,
                 'kuota_total' => $kuota,
-                'kuota_konsultasi' => $kuotaKonsultasiDefault,
+                'kuota_konsultasi_gizi' => 0,
+                'kuota_konsultasi_tumbuh_kembang' => $kuotaKonsultasiDefault,
                 // Jadwal source='gtk' (default) tidak lagi dipakai untuk
                 // booking sama sekali - data demo ini harus 'manual' supaya
                 // tetap bisa dipakai booking saat testing lokal.
@@ -119,8 +120,10 @@ class DatabaseSeeder extends Seeder
                     'shift' => $schedule->shift->value,
                     'kuota_total' => $schedule->kuota_total,
                     'kuota_terpakai' => 0,
-                    'kuota_konsultasi' => $schedule->kuota_konsultasi,
-                    'kuota_terpakai_konsultasi' => 0,
+                    'kuota_konsultasi_gizi' => $schedule->kuota_konsultasi_gizi,
+                    'kuota_terpakai_konsultasi_gizi' => 0,
+                    'kuota_konsultasi_tumbuh_kembang' => $schedule->kuota_konsultasi_tumbuh_kembang,
+                    'kuota_terpakai_konsultasi_tumbuh_kembang' => 0,
                     'last_synced_at' => now(),
                 ]);
             }

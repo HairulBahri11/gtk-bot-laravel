@@ -20,11 +20,14 @@ use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
- * Setiap shift membagi kuota_total jadi dua pool TERISOLASI - Pemeriksaan/
- * Imunisasi dan Konsultasi (lihat QuotaShift::tersisaFor()) - bukan cuma dua
- * angka dekoratif. Ini akar dari seluruh fitur pemisahan kuota, jadi
- * diuji terpisah dari DoctorShiftCancellationTest.php yang fokus ke
- * cancel/delay shift.
+ * Setiap shift membagi kuota_total jadi TIGA pool TERISOLASI - Pemeriksaan
+ * (Periksa Sakit/Imunisasi digabung), Konsultasi Gizi, dan Konsultasi Tumbuh
+ * Kembang (lihat QuotaShift::tersisaFor()) - bukan cuma angka-angka
+ * dekoratif. Ini akar dari seluruh fitur pemisahan kuota, jadi diuji
+ * terpisah dari DoctorShiftCancellationTest.php yang fokus ke cancel/delay
+ * shift. Kasus-kasus di sini sengaja memakai Tumbuh Kembang sebagai pool
+ * "lainnya" (bukan Gizi) - cukup untuk membuktikan isolasi antar pool,
+ * tidak perlu menguji ketiganya sekaligus di tiap kasus.
  */
 class JenisLayananQuotaTest extends TestCase
 {
@@ -62,7 +65,7 @@ class JenisLayananQuotaTest extends TestCase
         return $map[Carbon::parse($tanggal)->format('l')];
     }
 
-    protected function makeSchedule(string $shift, int $kuotaTotal = 15, int $kuotaKonsultasi = 1): void
+    protected function makeSchedule(string $shift, int $kuotaTotal = 15, int $kuotaKonsultasiTumbuhKembang = 1): void
     {
         DoctorSchedule::create([
             'kode_dokter' => $this->kodeDokter,
@@ -72,7 +75,8 @@ class JenisLayananQuotaTest extends TestCase
             'jam_selesai' => '09:30',
             'shift' => $shift,
             'kuota_total' => $kuotaTotal,
-            'kuota_konsultasi' => $kuotaKonsultasi,
+            'kuota_konsultasi_gizi' => 0,
+            'kuota_konsultasi_tumbuh_kembang' => $kuotaKonsultasiTumbuhKembang,
             'source' => 'manual',
         ]);
     }
@@ -81,8 +85,8 @@ class JenisLayananQuotaTest extends TestCase
         string $shift,
         int $kuotaTotal,
         int $kuotaTerpakai,
-        int $kuotaKonsultasi,
-        int $kuotaTerpakaiKonsultasi,
+        int $kuotaKonsultasiTumbuhKembang,
+        int $kuotaTerpakaiKonsultasiTumbuhKembang,
     ): QuotaShift {
         return QuotaShift::create([
             'kode_dokter' => $this->kodeDokter,
@@ -91,8 +95,10 @@ class JenisLayananQuotaTest extends TestCase
             'shift' => $shift,
             'kuota_total' => $kuotaTotal,
             'kuota_terpakai' => $kuotaTerpakai,
-            'kuota_konsultasi' => $kuotaKonsultasi,
-            'kuota_terpakai_konsultasi' => $kuotaTerpakaiKonsultasi,
+            'kuota_konsultasi_gizi' => 0,
+            'kuota_terpakai_konsultasi_gizi' => 0,
+            'kuota_konsultasi_tumbuh_kembang' => $kuotaKonsultasiTumbuhKembang,
+            'kuota_terpakai_konsultasi_tumbuh_kembang' => $kuotaTerpakaiKonsultasiTumbuhKembang,
             'status' => 'open',
         ]);
     }
@@ -119,8 +125,9 @@ class JenisLayananQuotaTest extends TestCase
     public function test_konsultasi_full_does_not_block_pemeriksaan_booking(): void
     {
         $this->makeSchedule('pagi');
-        // Total 2: konsultasi (1) penuh terpakai, pemeriksaan (1) masih kosong.
-        $this->makeQuotaShift('pagi', kuotaTotal: 2, kuotaTerpakai: 1, kuotaKonsultasi: 1, kuotaTerpakaiKonsultasi: 1);
+        // Total 2: konsultasi tumbuh kembang (1) penuh terpakai, pemeriksaan
+        // (1) masih kosong.
+        $this->makeQuotaShift('pagi', kuotaTotal: 2, kuotaTerpakai: 1, kuotaKonsultasiTumbuhKembang: 1, kuotaTerpakaiKonsultasiTumbuhKembang: 1);
 
         $session = $this->makePatientAndSession('000001');
 
@@ -139,8 +146,9 @@ class JenisLayananQuotaTest extends TestCase
     public function test_pemeriksaan_full_does_not_block_konsultasi_booking(): void
     {
         $this->makeSchedule('pagi');
-        // Total 2: konsultasi (1) masih kosong, pemeriksaan (1) penuh terpakai.
-        $this->makeQuotaShift('pagi', kuotaTotal: 2, kuotaTerpakai: 1, kuotaKonsultasi: 1, kuotaTerpakaiKonsultasi: 0);
+        // Total 2: konsultasi tumbuh kembang (1) masih kosong, pemeriksaan
+        // (1) penuh terpakai.
+        $this->makeQuotaShift('pagi', kuotaTotal: 2, kuotaTerpakai: 1, kuotaKonsultasiTumbuhKembang: 1, kuotaTerpakaiKonsultasiTumbuhKembang: 0);
 
         $session = $this->makePatientAndSession('000002');
 
@@ -150,7 +158,7 @@ class JenisLayananQuotaTest extends TestCase
             'kode_dokter' => $this->kodeDokter,
             'tanggal_periksa' => $this->tanggal,
             'shift' => Shift::Pagi,
-            'jenis_layanan' => JenisLayanan::Konsultasi,
+            'jenis_layanan' => JenisLayanan::KonsultasiTumbuhKembang,
         ]);
 
         $this->assertSame(BookingStatus::Booked, $booking->status);
@@ -159,9 +167,10 @@ class JenisLayananQuotaTest extends TestCase
     public function test_booking_waitlisted_when_own_category_full_even_if_other_category_has_room(): void
     {
         $this->makeSchedule('pagi');
-        // konsultasi (1) penuh, pemeriksaan (1) masih kosong - tapi pasien
-        // ini minta KONSULTASI, jadi tetap wajib waitlist.
-        $this->makeQuotaShift('pagi', kuotaTotal: 2, kuotaTerpakai: 1, kuotaKonsultasi: 1, kuotaTerpakaiKonsultasi: 1);
+        // konsultasi tumbuh kembang (1) penuh, pemeriksaan (1) masih kosong
+        // - tapi pasien ini minta KONSULTASI TUMBUH KEMBANG, jadi tetap
+        // wajib waitlist.
+        $this->makeQuotaShift('pagi', kuotaTotal: 2, kuotaTerpakai: 1, kuotaKonsultasiTumbuhKembang: 1, kuotaTerpakaiKonsultasiTumbuhKembang: 1);
 
         $session = $this->makePatientAndSession('000003');
 
@@ -171,7 +180,7 @@ class JenisLayananQuotaTest extends TestCase
             'kode_dokter' => $this->kodeDokter,
             'tanggal_periksa' => $this->tanggal,
             'shift' => Shift::Pagi,
-            'jenis_layanan' => JenisLayanan::Konsultasi,
+            'jenis_layanan' => JenisLayanan::KonsultasiTumbuhKembang,
         ]);
 
         $this->assertSame(BookingStatus::Waitlist, $booking->status);
@@ -181,7 +190,7 @@ class JenisLayananQuotaTest extends TestCase
     public function test_waitlist_promotion_only_promotes_matching_category(): void
     {
         $this->makeSchedule('pagi');
-        $this->makeQuotaShift('pagi', kuotaTotal: 2, kuotaTerpakai: 0, kuotaKonsultasi: 1, kuotaTerpakaiKonsultasi: 0);
+        $this->makeQuotaShift('pagi', kuotaTotal: 2, kuotaTerpakai: 0, kuotaKonsultasiTumbuhKembang: 1, kuotaTerpakaiKonsultasiTumbuhKembang: 0);
 
         $sessionA = $this->makePatientAndSession('000004');
         $bookingPemeriksaan = Booking::create([
@@ -204,14 +213,14 @@ class JenisLayananQuotaTest extends TestCase
             'kode_dokter' => $this->kodeDokter,
             'tanggal_periksa' => $this->tanggal,
             'shift' => 'pagi',
-            'jenis_layanan' => 'konsultasi',
+            'jenis_layanan' => 'konsultasi_tumbuh_kembang',
             'status' => BookingStatus::Waitlist->value,
             'waitlist_position' => 1,
         ]);
 
         // Satu slot PEMERIKSAAN terbuka (mis. batal) - promosikan HANYA
-        // waitlist kategori pemeriksaan, waitlist konsultasi tidak disentuh
-        // walau posisinya sama-sama #1.
+        // waitlist kategori pemeriksaan, waitlist konsultasi tumbuh kembang
+        // tidak disentuh walau posisinya sama-sama #1.
         app(AntreanService::class)->promoteWaitlist($this->kodeDokter, $this->tanggal, Shift::Pagi, JenisLayanan::Pemeriksaan, 1);
 
         $bookingPemeriksaan->refresh();
@@ -222,21 +231,22 @@ class JenisLayananQuotaTest extends TestCase
     }
 
     /**
-     * Regresi paling penting dari fitur ini: kuota_konsultasi adalah
-     * ALOKASI yang admin atur manual dari dashboard - resync berkala
+     * Regresi paling penting dari fitur ini: kuota_konsultasi_tumbuh_kembang
+     * adalah ALOKASI yang admin atur manual dari dashboard - resync berkala
      * (gtk:sync-quota, tiap 10 menit) TIDAK BOLEH menimpanya balik ke
      * default template, sama seperti status/delay_minutes/reason yang
-     * sudah dilindungi lebih dulu. kuota_terpakai_konsultasi sebaliknya
-     * WAJIB direkomputasi tiap sync (fakta terpakai, bukan target admin).
+     * sudah dilindungi lebih dulu. kuota_terpakai_konsultasi_tumbuh_kembang
+     * sebaliknya WAJIB direkomputasi tiap sync (fakta terpakai, bukan
+     * target admin).
      */
     public function test_sync_protects_manual_kuota_konsultasi_but_recomputes_usage(): void
     {
-        $this->makeSchedule('pagi', kuotaTotal: 15, kuotaKonsultasi: 1);
-        $quotaShift = $this->makeQuotaShift('pagi', kuotaTotal: 15, kuotaTerpakai: 0, kuotaKonsultasi: 1, kuotaTerpakaiKonsultasi: 0);
+        $this->makeSchedule('pagi', kuotaTotal: 15, kuotaKonsultasiTumbuhKembang: 1);
+        $quotaShift = $this->makeQuotaShift('pagi', kuotaTotal: 15, kuotaTerpakai: 0, kuotaKonsultasiTumbuhKembang: 1, kuotaTerpakaiKonsultasiTumbuhKembang: 0);
 
-        // Admin menaikkan alokasi konsultasi HARI INI secara manual dari
-        // dashboard (mis. kuota pemeriksaan sepi).
-        $quotaShift->update(['kuota_konsultasi' => 4]);
+        // Admin menaikkan alokasi konsultasi tumbuh kembang HARI INI secara
+        // manual dari dashboard (mis. kuota pemeriksaan sepi).
+        $quotaShift->update(['kuota_konsultasi_tumbuh_kembang' => 4]);
 
         $sessionKonsultasi = $this->makePatientAndSession('000006');
         Booking::create([
@@ -246,7 +256,7 @@ class JenisLayananQuotaTest extends TestCase
             'kode_dokter' => $this->kodeDokter,
             'tanggal_periksa' => $this->tanggal,
             'shift' => 'pagi',
-            'jenis_layanan' => 'konsultasi',
+            'jenis_layanan' => 'konsultasi_tumbuh_kembang',
             'status' => BookingStatus::Booked->value,
         ]);
 
@@ -263,21 +273,22 @@ class JenisLayananQuotaTest extends TestCase
 
         $quotaShift->refresh();
 
-        $this->assertSame(4, $quotaShift->kuota_konsultasi);
-        $this->assertSame(1, $quotaShift->kuota_terpakai_konsultasi);
+        $this->assertSame(4, $quotaShift->kuota_konsultasi_tumbuh_kembang);
+        $this->assertSame(1, $quotaShift->kuota_terpakai_konsultasi_tumbuh_kembang);
     }
 
     /**
-     * Buffer No-Show (§3.2 PRD) untuk booking KONSULTASI wajib menambah
-     * kuota_konsultasi juga, bukan cuma kuota_total - kalau tidak, buffer
-     * itu diam-diam "bocor" jadi tambahan kapasitas pemeriksaan (turunan
-     * kuota_total - kuota_konsultasi), padahal seharusnya menambah ruang
-     * untuk mempromosikan waitlist KONSULTASI.
+     * Buffer No-Show (§3.2 PRD) untuk booking KONSULTASI TUMBUH KEMBANG
+     * wajib menambah kuota_konsultasi_tumbuh_kembang juga, bukan cuma
+     * kuota_total - kalau tidak, buffer itu diam-diam "bocor" jadi tambahan
+     * kapasitas pemeriksaan (turunan kuota_total dikurangi kedua alokasi
+     * konsultasi), padahal seharusnya menambah ruang untuk mempromosikan
+     * waitlist KONSULTASI TUMBUH KEMBANG.
      */
     public function test_konsultasi_no_show_buffer_grows_konsultasi_allocation_not_just_total(): void
     {
         $this->makeSchedule('pagi');
-        $this->makeQuotaShift('pagi', kuotaTotal: 2, kuotaTerpakai: 1, kuotaKonsultasi: 1, kuotaTerpakaiKonsultasi: 1);
+        $this->makeQuotaShift('pagi', kuotaTotal: 2, kuotaTerpakai: 1, kuotaKonsultasiTumbuhKembang: 1, kuotaTerpakaiKonsultasiTumbuhKembang: 1);
 
         $session = $this->makePatientAndSession('000007');
         $booking = Booking::create([
@@ -287,7 +298,7 @@ class JenisLayananQuotaTest extends TestCase
             'kode_dokter' => $this->kodeDokter,
             'tanggal_periksa' => $this->tanggal,
             'shift' => 'pagi',
-            'jenis_layanan' => 'konsultasi',
+            'jenis_layanan' => 'konsultasi_tumbuh_kembang',
             'status' => BookingStatus::Booked->value,
         ]);
 
@@ -297,13 +308,13 @@ class JenisLayananQuotaTest extends TestCase
 
         $this->assertGreaterThan(2, $quota->kuota_total);
         $addedBuffer = $quota->kuota_total - 2;
-        $this->assertSame(1 + $addedBuffer, $quota->kuota_konsultasi);
+        $this->assertSame(1 + $addedBuffer, $quota->kuota_konsultasi_tumbuh_kembang);
     }
 
     public function test_pemeriksaan_no_show_buffer_grows_total_only_leaving_konsultasi_allocation_unchanged(): void
     {
         $this->makeSchedule('pagi');
-        $this->makeQuotaShift('pagi', kuotaTotal: 2, kuotaTerpakai: 1, kuotaKonsultasi: 1, kuotaTerpakaiKonsultasi: 0);
+        $this->makeQuotaShift('pagi', kuotaTotal: 2, kuotaTerpakai: 1, kuotaKonsultasiTumbuhKembang: 1, kuotaTerpakaiKonsultasiTumbuhKembang: 0);
 
         $session = $this->makePatientAndSession('000008');
         $booking = Booking::create([
@@ -322,6 +333,6 @@ class JenisLayananQuotaTest extends TestCase
         $quota = QuotaShift::where('kode_dokter', $this->kodeDokter)->where('shift', 'pagi')->whereDate('tanggal', $this->tanggal)->first();
 
         $this->assertGreaterThan(2, $quota->kuota_total);
-        $this->assertSame(1, $quota->kuota_konsultasi);
+        $this->assertSame(1, $quota->kuota_konsultasi_tumbuh_kembang);
     }
 }

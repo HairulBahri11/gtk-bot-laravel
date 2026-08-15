@@ -80,9 +80,12 @@ class JadwalDokterController extends Controller
                 'kuota_pemeriksaan' => $q->kuota_pemeriksaan,
                 'kuota_terpakai_pemeriksaan' => $q->kuota_terpakai_pemeriksaan,
                 'kuota_tersisa_pemeriksaan' => $q->kuota_tersisa_pemeriksaan,
-                'kuota_konsultasi' => $q->kuota_konsultasi,
-                'kuota_terpakai_konsultasi' => $q->kuota_terpakai_konsultasi,
-                'kuota_tersisa_konsultasi' => $q->kuota_tersisa_konsultasi,
+                'kuota_konsultasi_gizi' => $q->kuota_konsultasi_gizi,
+                'kuota_terpakai_konsultasi_gizi' => $q->kuota_terpakai_konsultasi_gizi,
+                'kuota_tersisa_konsultasi_gizi' => $q->kuota_tersisa_konsultasi_gizi,
+                'kuota_konsultasi_tumbuh_kembang' => $q->kuota_konsultasi_tumbuh_kembang,
+                'kuota_terpakai_konsultasi_tumbuh_kembang' => $q->kuota_terpakai_konsultasi_tumbuh_kembang,
+                'kuota_tersisa_konsultasi_tumbuh_kembang' => $q->kuota_tersisa_konsultasi_tumbuh_kembang,
             ])
             ->values();
 
@@ -98,7 +101,8 @@ class JadwalDokterController extends Controller
                 'jam_selesai' => substr($s->jam_selesai, 0, 5),
                 'shift' => $s->shift->value,
                 'kuota_total' => $s->kuota_total,
-                'kuota_konsultasi' => $s->kuota_konsultasi,
+                'kuota_konsultasi_gizi' => $s->kuota_konsultasi_gizi,
+                'kuota_konsultasi_tumbuh_kembang' => $s->kuota_konsultasi_tumbuh_kembang,
                 'kuota_pemeriksaan' => $s->kuota_pemeriksaan,
             ]),
             'statuses' => $statuses,
@@ -124,7 +128,8 @@ class JadwalDokterController extends Controller
             'jam_mulai' => ['required', 'date_format:H:i'],
             'jam_selesai' => ['required', 'date_format:H:i', 'after:jam_mulai'],
             'kuota_total' => ['required', 'integer', 'min:0'],
-            'kuota_konsultasi' => ['required', 'integer', 'min:0', 'lte:kuota_total'],
+            'kuota_konsultasi_gizi' => ['required', 'integer', 'min:0'],
+            'kuota_konsultasi_tumbuh_kembang' => ['required', 'integer', 'min:0', $this->konsultasiGabunganRule($request)],
         ]);
 
         $this->authorizeDokter($request->user(), $data['kode_dokter']);
@@ -143,7 +148,8 @@ class JadwalDokterController extends Controller
             'jam_selesai' => $data['jam_selesai'],
             'shift' => app(QuotaService::class)->bucketShift($data['jam_mulai'])->value,
             'kuota_total' => $data['kuota_total'],
-            'kuota_konsultasi' => $data['kuota_konsultasi'],
+            'kuota_konsultasi_gizi' => $data['kuota_konsultasi_gizi'],
+            'kuota_konsultasi_tumbuh_kembang' => $data['kuota_konsultasi_tumbuh_kembang'],
             'source' => 'manual',
             'synced_at' => now(),
         ]);
@@ -159,7 +165,8 @@ class JadwalDokterController extends Controller
             'jam_mulai' => ['required', 'date_format:H:i'],
             'jam_selesai' => ['required', 'date_format:H:i', 'after:jam_mulai'],
             'kuota_total' => ['required', 'integer', 'min:0'],
-            'kuota_konsultasi' => ['required', 'integer', 'min:0', 'lte:kuota_total'],
+            'kuota_konsultasi_gizi' => ['required', 'integer', 'min:0'],
+            'kuota_konsultasi_tumbuh_kembang' => ['required', 'integer', 'min:0', $this->konsultasiGabunganRule($request)],
         ]);
 
         $doctorSchedule->update([
@@ -167,7 +174,8 @@ class JadwalDokterController extends Controller
             'jam_selesai' => $data['jam_selesai'],
             'shift' => app(QuotaService::class)->bucketShift($data['jam_mulai'])->value,
             'kuota_total' => $data['kuota_total'],
-            'kuota_konsultasi' => $data['kuota_konsultasi'],
+            'kuota_konsultasi_gizi' => $data['kuota_konsultasi_gizi'],
+            'kuota_konsultasi_tumbuh_kembang' => $data['kuota_konsultasi_tumbuh_kembang'],
         ]);
 
         return back()->with('success', 'Jadwal diperbarui.');
@@ -265,5 +273,23 @@ class JadwalDokterController extends Controller
     protected function authorizeDokter(User $user, string $kodeDokter): void
     {
         abort_if($user->isDokter() && $kodeDokter !== $user->kode_dokter, 403);
+    }
+
+    /**
+     * kuota_konsultasi_gizi + kuota_konsultasi_tumbuh_kembang gabungan tidak
+     * boleh melebihi kuota_total - dua field terpisah tidak bisa dibandingkan
+     * ke JUMLAH keduanya lewat rule bawaan "lte:field" (itu cuma bisa
+     * membandingkan ke SATU field lain), jadi dicek manual di sini lewat
+     * closure yang membaca kedua input request langsung.
+     */
+    protected function konsultasiGabunganRule(Request $request): \Closure
+    {
+        return function (string $attribute, mixed $value, \Closure $fail) use ($request) {
+            $gabungan = (int) $request->input('kuota_konsultasi_gizi', 0) + (int) $value;
+
+            if ($gabungan > (int) $request->input('kuota_total', 0)) {
+                $fail('Total kuota konsultasi gizi + tumbuh kembang tidak boleh melebihi kuota total.');
+            }
+        };
     }
 }

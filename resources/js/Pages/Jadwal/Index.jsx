@@ -1,4 +1,4 @@
-import PreLayananLayout from '@/Layouts/PreLayananLayout';
+import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import PrimaryButton from '@/Components/PrimaryButton';
 import SecondaryButton from '@/Components/SecondaryButton';
 import DangerButton from '@/Components/DangerButton';
@@ -90,16 +90,21 @@ function ShiftStatusCard({ combo, statusRow, tanggal, isDokter }) {
             </div>
 
             {statusRow ? (
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-3 gap-2">
                     <QuotaStat
-                        label="Pemeriksaan/Imunisasi tersisa"
+                        label="Periksa Sakit/Imunisasi tersisa"
                         tersisa={statusRow.kuota_tersisa_pemeriksaan}
                         total={statusRow.kuota_pemeriksaan}
                     />
                     <QuotaStat
-                        label="Konsultasi tersisa"
-                        tersisa={statusRow.kuota_tersisa_konsultasi}
-                        total={statusRow.kuota_konsultasi}
+                        label="Konsultasi Gizi tersisa"
+                        tersisa={statusRow.kuota_tersisa_konsultasi_gizi}
+                        total={statusRow.kuota_konsultasi_gizi}
+                    />
+                    <QuotaStat
+                        label="Konsultasi Tumbuh Kembang tersisa"
+                        tersisa={statusRow.kuota_tersisa_konsultasi_tumbuh_kembang}
+                        total={statusRow.kuota_konsultasi_tumbuh_kembang}
                     />
                 </div>
             ) : (
@@ -161,14 +166,16 @@ function ShiftStatusCard({ combo, statusRow, tanggal, isDokter }) {
 
 // Baris tabel jadwal, dengan mode "ubah kuota" inline - jam/hari/dokter/poli
 // tidak bisa diubah lewat sini (harus hapus+tambah), hanya kuota_total &
-// kuota_konsultasi lewat endpoint PUT jadwal.update yang sudah ada.
+// kedua alokasi konsultasi (gizi/tumbuh kembang) lewat endpoint PUT
+// jadwal.update yang sudah ada.
 function ScheduleRow({ schedule }) {
     const [editing, setEditing] = useState(false);
     const { data, setData, put, processing, reset, errors, clearErrors } = useForm({
         jam_mulai: schedule.jam_mulai,
         jam_selesai: schedule.jam_selesai,
         kuota_total: schedule.kuota_total,
-        kuota_konsultasi: schedule.kuota_konsultasi,
+        kuota_konsultasi_gizi: schedule.kuota_konsultasi_gizi,
+        kuota_konsultasi_tumbuh_kembang: schedule.kuota_konsultasi_tumbuh_kembang,
     });
 
     function submitKuota(e) {
@@ -217,10 +224,20 @@ function ScheduleRow({ schedule }) {
                             <input
                                 type="number"
                                 min="0"
-                                max={data.kuota_total}
-                                value={data.kuota_konsultasi}
-                                onChange={(e) => setData('kuota_konsultasi', e.target.value)}
-                                aria-label="Kuota Konsultasi"
+                                value={data.kuota_konsultasi_gizi}
+                                onChange={(e) => setData('kuota_konsultasi_gizi', e.target.value)}
+                                aria-label="Kuota Konsultasi Gizi"
+                                title="Kuota Konsultasi Gizi"
+                                className="w-16 rounded-md border-gray-300 text-sm shadow-sm focus:border-[#2a78d6] focus:ring-[#2a78d6] dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                            />
+                            <span className="text-xs text-gray-400">/</span>
+                            <input
+                                type="number"
+                                min="0"
+                                value={data.kuota_konsultasi_tumbuh_kembang}
+                                onChange={(e) => setData('kuota_konsultasi_tumbuh_kembang', e.target.value)}
+                                aria-label="Kuota Konsultasi Tumbuh Kembang"
+                                title="Kuota Konsultasi Tumbuh Kembang"
                                 className="w-16 rounded-md border-gray-300 text-sm shadow-sm focus:border-[#2a78d6] focus:ring-[#2a78d6] dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
                             />
                         </div>
@@ -230,9 +247,9 @@ function ScheduleRow({ schedule }) {
                         <SecondaryButton type="button" onClick={cancelEdit} disabled={processing}>
                             Batal
                         </SecondaryButton>
-                        {(errors.kuota_total || errors.kuota_konsultasi) && (
+                        {(errors.kuota_total || errors.kuota_konsultasi_gizi || errors.kuota_konsultasi_tumbuh_kembang) && (
                             <p className="w-full text-xs text-red-600">
-                                Kuota konsultasi tidak boleh melebihi kuota total.
+                                Total kuota konsultasi gizi + tumbuh kembang tidak boleh melebihi kuota total.
                             </p>
                         )}
                     </form>
@@ -240,7 +257,8 @@ function ScheduleRow({ schedule }) {
                     <>
                         {schedule.kuota_total}{' '}
                         <span className="text-xs text-gray-500 dark:text-gray-400">
-                            ({schedule.kuota_pemeriksaan}/{schedule.kuota_konsultasi})
+                            (Periksa {schedule.kuota_pemeriksaan} / Gizi {schedule.kuota_konsultasi_gizi} / TK{' '}
+                            {schedule.kuota_konsultasi_tumbuh_kembang})
                         </span>
                     </>
                 )}
@@ -267,7 +285,8 @@ export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, 
         jam_mulai: '08:00',
         jam_selesai: '09:30',
         kuota_total: 15,
-        kuota_konsultasi: 1,
+        kuota_konsultasi_gizi: 0,
+        kuota_konsultasi_tumbuh_kembang: 1,
     });
 
     function applyFilter(e) {
@@ -305,7 +324,13 @@ export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, 
     }, [schedules, hariForTanggal]);
 
     return (
-        <PreLayananLayout header="Jadwal Dokter">
+        <AuthenticatedLayout
+            header={
+                <h2 className="text-xl font-semibold leading-tight text-gray-800 dark:text-gray-200">
+                    Jadwal Dokter
+                </h2>
+            }
+        >
             <Head title="Jadwal Dokter" />
 
             <div className="py-12">
@@ -399,19 +424,33 @@ export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, 
                                     />
                                 </div>
                                 <div>
-                                    <InputLabel value="Kuota Konsultasi" />
+                                    <InputLabel value="Kuota Konsultasi Gizi" />
                                     <TextInput
                                         type="number"
                                         min="0"
-                                        max={data.kuota_total}
-                                        value={data.kuota_konsultasi}
-                                        onChange={(e) => setData('kuota_konsultasi', e.target.value)}
+                                        value={data.kuota_konsultasi_gizi}
+                                        onChange={(e) => setData('kuota_konsultasi_gizi', e.target.value)}
+                                        className="mt-1 w-full"
+                                    />
+                                </div>
+                                <div>
+                                    <InputLabel value="Kuota Konsultasi Tumbuh Kembang" />
+                                    <TextInput
+                                        type="number"
+                                        min="0"
+                                        value={data.kuota_konsultasi_tumbuh_kembang}
+                                        onChange={(e) => setData('kuota_konsultasi_tumbuh_kembang', e.target.value)}
                                         className="mt-1 w-full"
                                     />
                                     <p className="mt-1 text-xs leading-snug text-gray-500 dark:text-gray-400">
                                         Sisanya (
-                                        {Math.max(0, (data.kuota_total || 0) - (data.kuota_konsultasi || 0))}) untuk
-                                        Pemeriksaan/Imunisasi.
+                                        {Math.max(
+                                            0,
+                                            (data.kuota_total || 0) -
+                                                (data.kuota_konsultasi_gizi || 0) -
+                                                (data.kuota_konsultasi_tumbuh_kembang || 0),
+                                        )}
+                                        ) untuk Periksa Sakit/Imunisasi.
                                     </p>
                                 </div>
                                 <div>
@@ -477,7 +516,7 @@ export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, 
                         <table className="min-w-full divide-y divide-gray-100 dark:divide-gray-800">
                             <thead className="border-b border-gray-200 bg-gray-50/80 dark:border-gray-800 dark:bg-gray-800/40">
                                 <tr>
-                                    {['Dokter', 'Poliklinik', 'Hari', 'Jam', 'Shift', 'Kuota (Periksa/Konsul)', ''].map(
+                                    {['Dokter', 'Poliklinik', 'Hari', 'Jam', 'Shift', 'Kuota (Periksa/Gizi/TK)', ''].map(
                                         (h) => (
                                             <th
                                                 key={h}
@@ -505,6 +544,6 @@ export default function JadwalIndex({ schedules, statuses, doctors, poliklinik, 
                     </div>
                 </div>
             </div>
-        </PreLayananLayout>
+        </AuthenticatedLayout>
     );
 }

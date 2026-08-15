@@ -7,6 +7,7 @@ use App\Models\QuotaShift;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -38,9 +39,12 @@ class KuotaController extends Controller
                 'kuota_total' => $q->kuota_total,
                 'kuota_terpakai' => $q->kuota_terpakai,
                 'kuota_tersisa' => $q->kuota_tersisa,
-                'kuota_konsultasi' => $q->kuota_konsultasi,
-                'kuota_terpakai_konsultasi' => $q->kuota_terpakai_konsultasi,
-                'kuota_tersisa_konsultasi' => $q->kuota_tersisa_konsultasi,
+                'kuota_konsultasi_gizi' => $q->kuota_konsultasi_gizi,
+                'kuota_terpakai_konsultasi_gizi' => $q->kuota_terpakai_konsultasi_gizi,
+                'kuota_tersisa_konsultasi_gizi' => $q->kuota_tersisa_konsultasi_gizi,
+                'kuota_konsultasi_tumbuh_kembang' => $q->kuota_konsultasi_tumbuh_kembang,
+                'kuota_terpakai_konsultasi_tumbuh_kembang' => $q->kuota_terpakai_konsultasi_tumbuh_kembang,
+                'kuota_tersisa_konsultasi_tumbuh_kembang' => $q->kuota_tersisa_konsultasi_tumbuh_kembang,
                 'kuota_pemeriksaan' => $q->kuota_pemeriksaan,
                 'kuota_terpakai_pemeriksaan' => $q->kuota_terpakai_pemeriksaan,
                 'kuota_tersisa_pemeriksaan' => $q->kuota_tersisa_pemeriksaan,
@@ -64,20 +68,22 @@ class KuotaController extends Controller
     }
 
     /**
-     * Sesuaikan alokasi kuota konsultasi untuk SATU snapshot harian (mis.
-     * kuota pemeriksaan sepi hari ini, geser sebagian ke konsultasi) - lihat
-     * docblock migration 2026_08_13_000002_add_kuota_konsultasi_to_quota_shifts_table
+     * Sesuaikan alokasi kuota konsultasi (Gizi atau Tumbuh Kembang, lihat
+     * "kategori") untuk SATU snapshot harian (mis. kuota pemeriksaan sepi
+     * hari ini, geser sebagian ke konsultasi) - lihat docblock migration
+     * 2026_08_15_000002_split_kuota_konsultasi_gizi_tumbuh_kembang_quota_shifts
      * untuk kenapa perubahan ini aman dari resync gtk:sync-quota berikutnya
-     * (kolom ini sengaja dikecualikan dari QuotaService::rebuildQuotaShifts()).
-     * Hanya menyentuh baris QuotaShift ini - TIDAK mengubah template
-     * DoctorSchedule (itu tugas JadwalDokterController, berlaku ke minggu
-     * berikutnya, bukan hari yang sudah berjalan).
+     * (kedua kolom alokasi ini sengaja dikecualikan dari QuotaService::
+     * rebuildQuotaShifts()). Hanya menyentuh baris QuotaShift ini - TIDAK
+     * mengubah template DoctorSchedule (itu tugas JadwalDokterController,
+     * berlaku ke minggu berikutnya, bukan hari yang sudah berjalan).
      */
     public function updateKonsultasi(Request $request, QuotaShift $quotaShift): RedirectResponse
     {
         abort_if($request->user()->isDokter() && $quotaShift->kode_dokter !== $request->user()->kode_dokter, 403);
 
         $data = $request->validate([
+            'kategori' => ['required', Rule::in(['gizi', 'tumbuh_kembang'])],
             // "max" (bukan "lte") - kuota_total di sini adalah nilai TETAP
             // hasil komputasi, bukan nama field lain di request; "lte:field"
             // Laravel selalu membandingkan ke field LAIN di input, bukan
@@ -85,7 +91,9 @@ class KuotaController extends Controller
             'kuota_konsultasi' => ['required', 'integer', 'min:0', 'max:'.$quotaShift->kuota_total],
         ]);
 
-        $quotaShift->update(['kuota_konsultasi' => $data['kuota_konsultasi']]);
+        $kolom = $data['kategori'] === 'gizi' ? 'kuota_konsultasi_gizi' : 'kuota_konsultasi_tumbuh_kembang';
+
+        $quotaShift->update([$kolom => $data['kuota_konsultasi']]);
 
         return back()->with('success', 'Alokasi kuota konsultasi diperbarui.');
     }

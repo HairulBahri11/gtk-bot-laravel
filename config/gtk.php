@@ -106,9 +106,12 @@ return [
     | Alokasi Kuota Konsultasi
     |--------------------------------------------------------------------------
     |
-    | Default alokasi "kuota_konsultasi" (lihat QuotaShift/DoctorSchedule)
-    | saat baris jadwal/snapshot dibuat PERTAMA KALI - baik dari sync GTK
-    | (QuotaService::syncSchedules()) maupun jadwal manual baru di dashboard.
+    | Default alokasi "kuota_konsultasi_tumbuh_kembang" (lihat QuotaShift/
+    | DoctorSchedule) saat baris jadwal/snapshot dibuat PERTAMA KALI - baik
+    | dari sync GTK (QuotaService::syncSchedules()) maupun jadwal manual baru
+    | di dashboard. Diperlakukan sebagai Tumbuh Kembang (bukan Gizi, yang
+    | mulai dari 0) - lihat migration
+    | 2026_08_15_000001_split_kuota_konsultasi_gizi_tumbuh_kembang_doctor_schedules.
     | HANYA berlaku sebagai nilai awal - setelah baris ada, admin bebas
     | menyesuaikannya lewat dashboard (mis. kuota pemeriksaan sepi, geser ke
     | konsultasi) dan penyesuaian itu TIDAK PERNAH ditimpa balik oleh sync

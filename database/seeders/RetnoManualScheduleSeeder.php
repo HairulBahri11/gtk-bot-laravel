@@ -20,11 +20,12 @@ use Illuminate\Database\Seeder;
  *   php artisan db:seed --class=RetnoManualScheduleSeeder
  *
  * kuota_total 15/shift dipakai sebagai default awal (belum ada angka resmi
- * di luar diskusi tim yang men-scope ulang alokasi Gizi/DDTK secara terpisah
- * dari revisi ini) - bisa diubah kapan pun lewat dashboard Jadwal Dokter.
- * Dari 15 itu, 1 kuota dialokasikan ke Konsultasi (sisanya 14 ke
- * Pemeriksaan/Imunisasi secara turunan - lihat DoctorSchedule::
- * getKuotaPemeriksaanAttribute()) - juga bisa disesuaikan lewat dashboard.
+ * di luar diskusi tim yang men-scope ulang alokasi Gizi/Tumbuh Kembang
+ * secara terpisah dari revisi ini) - bisa diubah kapan pun lewat dashboard
+ * Jadwal Dokter. Dari 15 itu, 1 kuota dialokasikan ke Konsultasi Tumbuh
+ * Kembang (Gizi mulai dari 0, sisanya 14 ke Pemeriksaan Sakit/Imunisasi
+ * secara turunan - lihat DoctorSchedule::getKuotaPemeriksaanAttribute()) -
+ * juga bisa disesuaikan lewat dashboard.
  */
 class RetnoManualScheduleSeeder extends Seeder
 {
@@ -32,7 +33,9 @@ class RetnoManualScheduleSeeder extends Seeder
 
     protected const DEFAULT_KUOTA = 15;
 
-    protected const DEFAULT_KUOTA_KONSULTASI = 1;
+    protected const DEFAULT_KUOTA_KONSULTASI_GIZI = 0;
+
+    protected const DEFAULT_KUOTA_KONSULTASI_TUMBUH_KEMBANG = 1;
 
     public function run(): void
     {
@@ -81,7 +84,8 @@ class RetnoManualScheduleSeeder extends Seeder
                     'jam_selesai' => $jamSelesai,
                     'shift' => $quota->bucketShift($jamMulai)->value,
                     'kuota_total' => self::DEFAULT_KUOTA,
-                    'kuota_konsultasi' => self::DEFAULT_KUOTA_KONSULTASI,
+                    'kuota_konsultasi_gizi' => self::DEFAULT_KUOTA_KONSULTASI_GIZI,
+                    'kuota_konsultasi_tumbuh_kembang' => self::DEFAULT_KUOTA_KONSULTASI_TUMBUH_KEMBANG,
                     'source' => 'manual',
                     'synced_at' => now(),
                 ],

@@ -16,7 +16,8 @@ class DoctorSchedule extends Model
         'jam_selesai',
         'shift',
         'kuota_total',
-        'kuota_konsultasi',
+        'kuota_konsultasi_gizi',
+        'kuota_konsultasi_tumbuh_kembang',
         'source',
         'synced_at',
     ];
@@ -31,13 +32,17 @@ class DoctorSchedule extends Model
 
     /**
      * Template default alokasi pemeriksaan - QuotaService::rebuildQuotaShifts()
-     * menyalin kuota_konsultasi ini ke QuotaShift HANYA saat baris snapshot
-     * pertama kali dibuat (lihat QuotaShift::kuotaFor() untuk turunan yang
-     * sesungguhnya dipakai saat pengecekan ketersediaan).
+     * menyalin kedua kolom kuota_konsultasi_* ini ke QuotaShift HANYA saat
+     * baris snapshot pertama kali dibuat (lihat QuotaShift::kuotaFor() untuk
+     * turunan yang sesungguhnya dipakai saat pengecekan ketersediaan).
+     * Kedua alokasi konsultasi digabung dulu (clamped ke kuota_total) supaya
+     * konsisten dengan cara QuotaShift::kuotaFor() menghitung Pemeriksaan.
      */
     public function getKuotaPemeriksaanAttribute(): int
     {
-        return max(0, $this->kuota_total - min($this->kuota_konsultasi, $this->kuota_total));
+        $konsultasi = min($this->kuota_konsultasi_gizi + $this->kuota_konsultasi_tumbuh_kembang, $this->kuota_total);
+
+        return max(0, $this->kuota_total - $konsultasi);
     }
 
     public function doctor(): BelongsTo

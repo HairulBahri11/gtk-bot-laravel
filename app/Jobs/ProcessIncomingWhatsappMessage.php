@@ -640,10 +640,11 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         // AiEngineService::stateOnePrompt) sebelum lanjut ke booking.
         $noHpDikonfirmasi = ($context['no_hp_dikonfirmasi'] ?? false) === true;
 
-        // jenis_layanan (Pemeriksaan/Imunisasi atau Konsultasi) WAJIB
-        // ditanyakan & dijawab eksplisit sebelum booking - dua pool kuota
-        // ini terisolasi (lihat QuotaShift::tersisaFor()), jadi AI TIDAK
-        // BOLEH menyimpulkannya sendiri dari keluhan/poliklinik.
+        // jenis_layanan (Pemeriksaan, Konsultasi Gizi, atau Konsultasi
+        // Tumbuh Kembang) WAJIB ditanyakan & dijawab eksplisit sebelum
+        // booking - ketiga pool kuota ini terisolasi (lihat QuotaShift::
+        // tersisaFor()), jadi AI TIDAK BOLEH menyimpulkannya sendiri dari
+        // keluhan/poliklinik.
         $jenisLayananDijawab = ($context['jenis_layanan_dijawab'] ?? false) === true;
 
         if (! $complete || ! $poliDisetujui || ! $noHpDikonfirmasi || ! $jenisLayananDijawab || ! $result['ready_for_next_state']) {
@@ -1079,7 +1080,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         $jenis = JenisLayanan::tryFrom((string) ($context['jenis_layanan'] ?? ''));
 
         if (! $jenis) {
-            return 'Mohon konfirmasi ulang jenis layanan (Pemeriksaan/Imunisasi atau Konsultasi).';
+            return 'Mohon konfirmasi ulang jenis layanan (Periksa Sakit/Imunisasi, Konsultasi Gizi, atau Konsultasi Tumbuh Kembang).';
         }
 
         if (! $tanggalSecepatnya) {

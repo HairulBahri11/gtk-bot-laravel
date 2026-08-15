@@ -34,6 +34,12 @@ export default function AuthenticatedLayout({ header, children }) {
                                     Overview
                                 </NavLink>
                                 <NavLink
+                                    href={route('jadwal.index')}
+                                    active={route().current('jadwal.*')}
+                                >
+                                    Jadwal Dokter
+                                </NavLink>
+                                <NavLink
                                     href={route('kuota.index')}
                                     active={
                                         route().current('kuota.*') ||
@@ -165,6 +171,12 @@ export default function AuthenticatedLayout({ header, children }) {
                             active={route().current('dashboard')}
                         >
                             Overview
+                        </ResponsiveNavLink>
+                        <ResponsiveNavLink
+                            href={route('jadwal.index')}
+                            active={route().current('jadwal.*')}
+                        >
+                            Jadwal Dokter
                         </ResponsiveNavLink>
                         <ResponsiveNavLink
                             href={route('kuota.index')}

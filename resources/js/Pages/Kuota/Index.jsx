@@ -7,71 +7,8 @@ import { useMemo, useState } from 'react';
 const shiftLabel = { pagi: 'Pagi', sore: 'Sore', malam: 'Malam' };
 const shiftOrder = ['pagi', 'sore', 'malam'];
 
-const statusStyle = {
-    open: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
-    delayed: 'bg-amber-50 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
-    cancelled: 'bg-red-50 text-red-700 dark:bg-red-900/40 dark:text-red-300',
-};
-
-const statusLabel = { open: 'Buka', delayed: 'Delay', cancelled: 'Dibatalkan' };
-
-function StatusBadge({ status, delayMinutes }) {
-    const label = statusLabel[status] ?? status;
-    const suffix = status === 'delayed' && delayMinutes ? ` +${delayMinutes} mnt` : '';
-
-    return (
-        <span
-            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${statusStyle[status] ?? ''}`}
-        >
-            {label}
-            {suffix}
-        </span>
-    );
-}
-
-// Input kuota konsultasi per snapshot harian - disimpan begitu user blur dari
-// field (bukan tombol simpan terpisah, biar cepat untuk penyesuaian kecil).
-// Perubahan ini HANYA menyentuh baris QuotaShift hari ini (lihat
-// KuotaController::updateKonsultasi()) - tidak mengubah template mingguan di
-// halaman Jadwal Dokter, jadi tidak berlaku otomatis untuk hari-hari lain.
-function KonsultasiInput({ quotaShift }) {
-    const [value, setValue] = useState(quotaShift.kuota_konsultasi);
-    const [saving, setSaving] = useState(false);
-
-    function save() {
-        const parsed = Number(value);
-
-        if (Number.isNaN(parsed) || parsed === quotaShift.kuota_konsultasi) {
-            setValue(quotaShift.kuota_konsultasi);
-
-            return;
-        }
-
-        setSaving(true);
-        router.patch(
-            route('kuota.update-konsultasi', quotaShift.id),
-            { kuota_konsultasi: parsed },
-            { preserveScroll: true, preserveState: true, onFinish: () => setSaving(false) },
-        );
-    }
-
-    return (
-        <input
-            type="number"
-            min="0"
-            max={quotaShift.kuota_total}
-            value={value}
-            disabled={saving}
-            onChange={(e) => setValue(e.target.value)}
-            onBlur={save}
-            className="w-16 rounded-md border-gray-300 text-sm shadow-sm focus:border-[#2a78d6] focus:ring-[#2a78d6] disabled:opacity-50 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-        />
-    );
-}
-
 export default function KuotaIndex({ quotaShifts, filters }) {
     const [tanggal, setTanggal] = useState(filters.tanggal);
-    const [syncing, setSyncing] = useState(false);
 
     const shiftTotals = useMemo(
         () =>
@@ -85,8 +22,13 @@ export default function KuotaIndex({ quotaShifts, filters }) {
                     used: rows.reduce((sum, r) => sum + r.kuota_terpakai, 0),
                     totalPemeriksaan: rows.reduce((sum, r) => sum + r.kuota_pemeriksaan, 0),
                     usedPemeriksaan: rows.reduce((sum, r) => sum + r.kuota_terpakai_pemeriksaan, 0),
-                    totalKonsultasi: rows.reduce((sum, r) => sum + r.kuota_konsultasi, 0),
-                    usedKonsultasi: rows.reduce((sum, r) => sum + r.kuota_terpakai_konsultasi, 0),
+                    totalKonsultasiGizi: rows.reduce((sum, r) => sum + r.kuota_konsultasi_gizi, 0),
+                    usedKonsultasiGizi: rows.reduce((sum, r) => sum + r.kuota_terpakai_konsultasi_gizi, 0),
+                    totalKonsultasiTumbuhKembang: rows.reduce((sum, r) => sum + r.kuota_konsultasi_tumbuh_kembang, 0),
+                    usedKonsultasiTumbuhKembang: rows.reduce(
+                        (sum, r) => sum + r.kuota_terpakai_konsultasi_tumbuh_kembang,
+                        0,
+                    ),
                 };
             }),
         [quotaShifts],
@@ -101,22 +43,13 @@ export default function KuotaIndex({ quotaShifts, filters }) {
         );
     }
 
-    function handleSync() {
-        setSyncing(true);
-        router.post(
-            route('kuota.sync'),
-            {},
-            { onFinish: () => setSyncing(false) },
-        );
-    }
-
     return (
         <PreLayananLayout header="Kuota Shift">
             <Head title="Kuota Shift" />
 
             <div className="py-12">
                 <div className="mx-auto max-w-7xl space-y-6 sm:px-6 lg:px-8">
-                    <div className="flex flex-wrap items-end justify-between gap-4 rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200/70 dark:bg-gray-900 dark:ring-gray-800">
+                    <div className="flex flex-wrap items-end gap-4 rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200/70 dark:bg-gray-900 dark:ring-gray-800">
                         <form
                             onSubmit={applyFilter}
                             className="flex items-end gap-3"
@@ -138,12 +71,6 @@ export default function KuotaIndex({ quotaShifts, filters }) {
                                 Tampilkan
                             </PrimaryButton>
                         </form>
-
-                        <PrimaryButton onClick={handleSync} disabled={syncing}>
-                            {syncing
-                                ? 'Menyinkronkan...'
-                                : 'Sinkronkan dari GTK'}
-                        </PrimaryButton>
                     </div>
 
                     <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200/70 dark:bg-gray-900 dark:ring-gray-800">
@@ -157,106 +84,26 @@ export default function KuotaIndex({ quotaShifts, filters }) {
                                     className="space-y-2.5 rounded-lg bg-gray-50/60 p-3 dark:bg-gray-800/30"
                                 >
                                     <ShiftMeter label={s.label} used={s.used} total={s.total} />
-                                    <div className="grid gap-2.5 pl-3 sm:grid-cols-2">
+                                    <div className="grid gap-2.5 pl-3 sm:grid-cols-3">
                                         <ShiftMeter
-                                            label="Pemeriksaan/Imunisasi"
+                                            label="Periksa Sakit/Imunisasi"
                                             used={s.usedPemeriksaan}
                                             total={s.totalPemeriksaan}
                                         />
                                         <ShiftMeter
-                                            label="Konsultasi"
-                                            used={s.usedKonsultasi}
-                                            total={s.totalKonsultasi}
+                                            label="Konsultasi Gizi"
+                                            used={s.usedKonsultasiGizi}
+                                            total={s.totalKonsultasiGizi}
+                                        />
+                                        <ShiftMeter
+                                            label="Konsultasi Tumbuh Kembang"
+                                            used={s.usedKonsultasiTumbuhKembang}
+                                            total={s.totalKonsultasiTumbuhKembang}
                                         />
                                     </div>
                                 </div>
                             ))}
                         </div>
-                    </div>
-
-                    <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-gray-200/70 dark:bg-gray-900 dark:ring-gray-800">
-                        <table className="min-w-full divide-y divide-gray-100 dark:divide-gray-800">
-                            <thead className="border-b border-gray-200 bg-gray-50/80 dark:border-gray-800 dark:bg-gray-800/40">
-                                <tr>
-                                    {[
-                                        'Poliklinik',
-                                        'Dokter',
-                                        'Shift',
-                                        'Status',
-                                        'Kuota Total',
-                                        'Terpakai',
-                                        'Tersisa',
-                                        'Pemeriksaan (Tersisa)',
-                                        'Kuota Konsultasi',
-                                        'Konsultasi (Tersisa)',
-                                        'Sinkron Terakhir',
-                                    ].map((h) => (
-                                        <th
-                                            key={h}
-                                            className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"
-                                        >
-                                            {h}
-                                        </th>
-                                    ))}
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                                {quotaShifts.length === 0 && (
-                                    <tr>
-                                        <td
-                                            colSpan={11}
-                                            className="px-4 py-6 text-center text-sm text-gray-500"
-                                        >
-                                            Tidak ada data kuota untuk
-                                            tanggal ini.
-                                        </td>
-                                    </tr>
-                                )}
-                                {quotaShifts.map((q) => (
-                                    <tr
-                                        key={q.id}
-                                        className="transition-colors hover:bg-gray-50/80 dark:hover:bg-gray-800/40"
-                                    >
-                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
-                                            {q.nama_poliklinik}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
-                                            {q.nama_dokter}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
-                                            {shiftLabel[q.shift] ?? q.shift}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm">
-                                            <StatusBadge
-                                                status={q.status}
-                                                delayMinutes={q.delay_minutes}
-                                            />
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
-                                            {q.kuota_total}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
-                                            {q.kuota_terpakai}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100">
-                                            {q.kuota_tersisa}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
-                                            {q.kuota_tersisa_pemeriksaan}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm">
-                                            <KonsultasiInput quotaShift={q} />
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
-                                            {q.kuota_tersisa_konsultasi}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-                                            {q.last_synced_at ?? '-'}
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
                     </div>
                 </div>
             </div>

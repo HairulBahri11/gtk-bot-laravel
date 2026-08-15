@@ -85,8 +85,8 @@ class DoctorShiftCancellationTest extends TestCase
         int $kuotaTotal = 5,
         int $kuotaTerpakai = 0,
         string $status = 'open',
-        int $kuotaKonsultasi = 1,
-        int $kuotaTerpakaiKonsultasi = 0,
+        int $kuotaKonsultasiTumbuhKembang = 1,
+        int $kuotaTerpakaiKonsultasiTumbuhKembang = 0,
     ): QuotaShift {
         return QuotaShift::create([
             'kode_dokter' => $this->kodeDokter,
@@ -95,8 +95,10 @@ class DoctorShiftCancellationTest extends TestCase
             'shift' => $shift,
             'kuota_total' => $kuotaTotal,
             'kuota_terpakai' => $kuotaTerpakai,
-            'kuota_konsultasi' => $kuotaKonsultasi,
-            'kuota_terpakai_konsultasi' => $kuotaTerpakaiKonsultasi,
+            'kuota_konsultasi_gizi' => 0,
+            'kuota_terpakai_konsultasi_gizi' => 0,
+            'kuota_konsultasi_tumbuh_kembang' => $kuotaKonsultasiTumbuhKembang,
+            'kuota_terpakai_konsultasi_tumbuh_kembang' => $kuotaTerpakaiKonsultasiTumbuhKembang,
             'status' => $status,
         ]);
     }
