@@ -176,4 +176,10 @@ class FakeDoctorWhatsAppService implements WhatsAppServiceInterface
     {
         $this->sent[] = ['to' => $to, 'message' => $message];
     }
+
+    public function sendSeen(string $chatId): void {}
+
+    public function startTyping(string $chatId): void {}
+
+    public function stopTyping(string $chatId): void {}
 }

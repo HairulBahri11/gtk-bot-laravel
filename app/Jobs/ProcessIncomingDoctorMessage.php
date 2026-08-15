@@ -44,6 +44,9 @@ class ProcessIncomingDoctorMessage implements ShouldQueue
 
     public function handle(DoctorCommandParser $parser, AntreanService $antrean, WhatsAppServiceInterface $wa): void
     {
+        $wa->sendSeen($this->chatId);
+        $wa->startTyping($this->chatId);
+
         $pending = Cache::get($this->cacheKey());
 
         if ($pending && $parser->isAffirmative($this->text)) {
@@ -151,6 +154,7 @@ class ProcessIncomingDoctorMessage implements ShouldQueue
     protected function reply(WhatsAppServiceInterface $wa, string $message): void
     {
         $wa->sendText($this->chatId, $message);
+        $wa->stopTyping($this->chatId);
 
         WhatsappMessage::create([
             'chat_id' => $this->chatId,

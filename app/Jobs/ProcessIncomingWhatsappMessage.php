@@ -80,6 +80,15 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         );
         $session->last_message_at = now();
 
+        // Tandai pesan sudah dibaca & tampilkan indikator mengetik sedini
+        // mungkin (sebelum AI/GTK dipanggil) - selain terasa lebih manusiawi
+        // buat user, ini juga langkah anti-blokir WA: nomor yang membalas
+        // instan tanpa pernah "membaca"/"mengetik" lebih gampang dicurigai
+        // sebagai bot murni oleh WhatsApp. reply() di bawah yang menghentikan
+        // indikator ini begitu balasan benar-benar terkirim.
+        $wa->sendSeen($this->chatId);
+        $wa->startTyping($this->chatId);
+
         $this->autoFillPhoneFromChatId($session);
 
         // Pertanyaan jadwal dokter (mis. "dr. Retno hari ini jadwal jam
@@ -530,15 +539,49 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         $session->context = $context;
     }
 
+    /**
+     * Marker literal yang AI boleh sisipkan di tengah "reply" untuk menandai
+     * batas antar pesan WhatsApp terpisah (lihat instruksi di
+     * AiEngineService::buildSystemPrompt()/stateOnePrompt() - dipakai mis.
+     * untuk memisahkan kalimat empati+arahan poliklinik dari daftar isian
+     * data pendaftaran, supaya terkirim sebagai dua pesan berurutan seperti
+     * orang mengetik, bukan satu blok teks panjang). Kalau marker ini tidak
+     * ada sama sekali (kasus umum), hasilnya tetap satu pesan seperti biasa.
+     */
+    protected const MESSAGE_SPLIT_MARKER = '|||PESAN_BARU|||';
+
     protected function reply(WhatsAppServiceInterface $wa, string $message): void
     {
-        $wa->sendText($this->chatId, $message);
+        $parts = collect(explode(self::MESSAGE_SPLIT_MARKER, $message))
+            ->map(fn (string $part) => trim($part))
+            ->filter(fn (string $part) => $part !== '')
+            ->values();
 
-        WhatsappMessage::create([
-            'chat_id' => $this->chatId,
-            'direction' => 'out',
-            'message' => $message,
-        ]);
+        if ($parts->isEmpty()) {
+            $parts = collect([trim($message)]);
+        }
+
+        $lastIndex = $parts->count() - 1;
+
+        foreach ($parts as $index => $part) {
+            $wa->sendText($this->chatId, $part);
+
+            WhatsappMessage::create([
+                'chat_id' => $this->chatId,
+                'direction' => 'out',
+                'message' => $part,
+            ]);
+
+            if ($index === $lastIndex) {
+                $wa->stopTyping($this->chatId);
+            } else {
+                // Bukan pesan terakhir - tampilkan lagi indikator mengetik
+                // sebelum pesan berikutnya dikirim, supaya beberapa pesan
+                // berurutan ini tetap terasa seperti diketik satu-satu,
+                // bukan diam-diam langsung nyerocos semuanya sekaligus.
+                $wa->startTyping($this->chatId);
+            }
+        }
     }
 
     /**
