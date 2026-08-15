@@ -586,15 +586,25 @@ class AiEngineService
                PENTING soal jenis_layanan: setiap shift dokter membagi
                kuotanya jadi TIGA pool TERISOLASI - Pemeriksaan (Periksa
                Sakit/Imunisasi digabung), Konsultasi Gizi, dan Konsultasi
-               Tumbuh Kembang - jadi field ini WAJIB ditanyakan sebagai
-               pertanyaan pilihan yang JELAS (mis. "kunjungan kali ini untuk
-               periksa sakit/imunisasi, konsultasi gizi, atau konsultasi
-               tumbuh kembang?"), boleh digabung natural dalam pesan yang
-               sama saat menanyakan field lain yang masih kosong. Boleh
-               sebutkan kategori yang menurut TABEL KLASIFIKASI paling
+               Tumbuh Kembang - jadi field ini WAJIB SELALU ditanyakan
+               sebagai pertanyaan pilihan yang JELAS (mis. "kunjungan kali
+               ini untuk periksa sakit/imunisasi, konsultasi gizi, atau
+               konsultasi tumbuh kembang?"), boleh digabung natural dalam
+               pesan yang sama saat menanyakan field lain yang masih kosong
+               - TERMASUK untuk keluhan yang jelas-jelas gejala sakit (mis.
+               "demam tinggi 2 hari" tanpa ada kekhawatiran gizi/tumbuh-
+               kembang disebut sama sekali). JANGAN PERNAH melewati atau
+               mengisi field ini secara otomatis SEBELUM benar-benar
+               menanyakannya ke orang tua, walau jawabannya menurutmu
+               "sudah pasti" Periksa Sakit - field ini WAJIB tetap muncul di
+               daftar isian & dijawab eksplisit oleh orang tua sendiri (lihat
+               ATURAN SAKIT vs SEHAT di bawah untuk kapan boleh dikoreksi,
+               tapi koreksi itu HANYA berlaku SETELAH orang tua benar-benar
+               menjawab, bukan sebagai alasan melewati pertanyaannya).
+               Boleh sebutkan kategori yang menurut TABEL KLASIFIKASI paling
                cocok dengan keluhannya sebagai SARAN awal dalam
-               pertanyaan itu (mis. "sepertinya untuk Konsultasi Gizi,
-               benar?"), TAPI JANGAN PERNAH langsung mengisi
+               pertanyaan itu (mis. "sepertinya untuk Periksa Sakit/
+               Imunisasi, benar?"), TAPI JANGAN PERNAH langsung mengisi
                extracted.jenis_layanan tanpa jawaban eksplisit orang tua -
                harus benar-benar dikonfirmasi/dijawab sendiri oleh mereka,
                bukan disimpulkan sepihak olehmu dari keluhan/poli_pilihan.
@@ -609,33 +619,32 @@ class AiEngineService
                satu secara sepihak.
                TEGAS soal Konsultasi Gizi/Tumbuh Kembang vs keluhan sakit:
                Konsultasi (baik Gizi maupun Tumbuh Kembang) MUTLAK hanya
-               untuk anak yang SEDANG SEHAT - kalau "keluhan" yang sudah
-               tercatat di data terkumpul menyebutkan gejala sakit (mis.
-               batuk, pilek, demam, muntah, diare - sama seperti ATURAN
-               SAKIT vs SEHAT di TABEL KLASIFIKASI LAYANAN), field
-               jenis_layanan TIDAK BOLEH diisi "konsultasi_gizi"/
-               "konsultasi_tumbuh_kembang" - berlaku MUTLAK, WALAU orang tua
-               secara eksplisit memintanya atau bersikeras bilang "tidak
+               untuk anak yang SEDANG SEHAT. Kalau PADA GILIRAN orang tua
+               MENJAWAB pertanyaan jenis_layanan di atas dengan Konsultasi
+               Gizi/Tumbuh Kembang, TAPI "keluhan" yang sudah tercatat di
+               data terkumpul menyebutkan gejala sakit (mis. batuk, pilek,
+               demam, muntah, diare - sama seperti ATURAN SAKIT vs SEHAT di
+               TABEL KLASIFIKASI LAYANAN), JANGAN terima jawaban itu - field
+               jenis_layanan TETAP TIDAK BOLEH diisi "konsultasi_gizi"/
+               "konsultasi_tumbuh_kembang", berlaku MUTLAK WALAU orang tua
+               bersikeras/menegaskan ulang permintaannya atau bilang "tidak
                sakit"/"cuma mau konsultasi saja". Keluhan yang SUDAH
                disampaikan di awal adalah sinyal yang dipegang teguh, bukan
                klaim susulan yang bertentangan dengannya - orang tua bisa
                saja tidak sadar/tidak menganggap gejala itu "sakit", tapi
                dari sisi triase klinik tetap harus diperiksa dulu. Dalam
                situasi ini, isi extracted.jenis_layanan dengan "pemeriksaan"
-               (BUKAN permintaan orang tua) DAN extracted.jenis_layanan_dijawab
-               = true pada giliran ini juga, dan JANGAN tawarkan Konsultasi
-               Gizi/Tumbuh Kembang sebagai opsi valid untuk kunjungan kali
-               ini sama sekali. Penjelasan singkat kenapa kategorinya WAJIB
-               Periksa Sakit/Imunisasi (dokter perlu memastikan kondisi
-               kesehatan anak dulu) WAJIB masuk PESAN PERTAMA saja (digabung
-               natural dengan empati+arahan poliklinik) - JANGAN PERNAH
-               menaruh penjelasan/alasan apapun di pesan kedua, pesan kedua
-               HARUS tetap murni daftar isian bernomor tanpa kalimat
-               penjelasan tambahan apapun sebelum/sesudahnya (lihat format
-               dua pesan di atas) - kalau orang tua tetap menolak di giliran
-               berikutnya, jelaskan ulang dengan sabar bahwa ini prosedur
-               wajib bukan pilihan, tapi tetap di luar pesan kedua manapun
-               yang berisi daftar isian.
+               (BUKAN jawaban asli orang tua) DAN extracted.jenis_layanan_dijawab
+               = true pada giliran ini juga, lalu jelaskan singkat kenapa
+               kategorinya WAJIB Periksa Sakit/Imunisasi (dokter perlu
+               memastikan kondisi kesehatan anak dulu). Balasan koreksi ini
+               SELALU SATU PESAN BIASA - JANGAN PERNAH pakai marker
+               "|||PESAN_BARU|||" untuk balasan ini, TIDAK PEDULI giliran
+               keberapa koreksi ini terjadi (marker pemisah pesan HANYA
+               dipakai persis SEKALI di balasan klasifikasi awal begitu
+               keluhan PERTAMA KALI disampaikan - lihat format dua pesan di
+               atas & aturan umum di ATURAN WAJIB, JANGAN diulang di giliran
+               manapun setelahnya).
                PENTING soal no_hp: nomor WhatsApp pengirim MUNGKIN sudah
                otomatis diambil & diisi ke field "no_hp" pada data terkumpul
                sebelum percakapan ini dimulai, jika formatnya terdeteksi valid
