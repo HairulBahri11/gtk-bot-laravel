@@ -444,10 +444,11 @@ class AiEngineService
                     PERTANYAAN KONFIRMASI TERAKHIR yang diajukan asisten
                     (lihat giliran "assistant" paling akhir di riwayat
                     percakapan) - maknanya tergantung konteks saat
-                    pertanyaan itu diajukan (bisa berarti konfirmasi
-                    kecocokan data pasien di STATE_1, atau konfirmasi
-                    jadwal booking di STATE_2 - lihat instruksi state di
-                    bawah), true HANYA jika user menjawab afirmatif jelas
+                    pertanyaan itu diajukan (mis. konfirmasi kecocokan data
+                    pasien di STATE_1 - lihat instruksi state di bawah;
+                    TIDAK dipakai lagi di STATE_2, jadwal booking final
+                    dikonfirmasi langsung oleh sistem, bukan lewat field
+                    ini), true HANYA jika user menjawab afirmatif jelas
                     terhadap pertanyaan itu>,
                   "intent": "<batal|reschedule|kunjungan_baru|tanya|null>"
                 },
@@ -601,6 +602,29 @@ class AiEngineService
                sama. Kalau jawabannya ambigu/tidak jelas termasuk yang
                mana, tanyakan ulang secara spesifik - JANGAN menebak salah
                satu secara sepihak.
+               TEGAS soal Konsultasi Gizi/Tumbuh Kembang vs keluhan sakit:
+               Konsultasi (baik Gizi maupun Tumbuh Kembang) MUTLAK hanya
+               untuk anak yang SEDANG SEHAT - kalau "keluhan" yang sudah
+               tercatat di data terkumpul menyebutkan gejala sakit (mis.
+               batuk, pilek, demam, muntah, diare - sama seperti ATURAN
+               SAKIT vs SEHAT di TABEL KLASIFIKASI LAYANAN), field
+               jenis_layanan TIDAK BOLEH diisi "konsultasi_gizi"/
+               "konsultasi_tumbuh_kembang" - berlaku MUTLAK, WALAU orang tua
+               secara eksplisit memintanya atau bersikeras bilang "tidak
+               sakit"/"cuma mau konsultasi saja". Keluhan yang SUDAH
+               disampaikan di awal adalah sinyal yang dipegang teguh, bukan
+               klaim susulan yang bertentangan dengannya - orang tua bisa
+               saja tidak sadar/tidak menganggap gejala itu "sakit", tapi
+               dari sisi triase klinik tetap harus diperiksa dulu. Dalam
+               situasi ini, balas dengan empatik bahwa untuk keluhan
+               tersebut kunjungannya WAJIB kategori Periksa Sakit/Imunisasi
+               terlebih dahulu (dokter perlu memastikan kondisi kesehatan
+               anak sebelum konsultasi apapun terkait gizi/tumbuh kembang),
+               isi extracted.jenis_layanan dengan "pemeriksaan" (BUKAN
+               permintaan orang tua), dan JANGAN tawarkan Konsultasi Gizi/
+               Tumbuh Kembang sebagai opsi valid untuk kunjungan kali ini
+               sama sekali - kalau orang tua tetap menolak, jelaskan ulang
+               dengan sabar bahwa ini prosedur wajib, bukan pilihan.
                PENTING soal no_hp: nomor WhatsApp pengirim MUNGKIN sudah
                otomatis diambil & diisi ke field "no_hp" pada data terkumpul
                sebelum percakapan ini dimulai, jika formatnya terdeteksi valid
@@ -781,18 +805,23 @@ class AiEngineService
               "secepatnya" (JANGAN PERNAH kosong/null). SEKALI
               tanggal_kunjungan_dijawab true, jangan tanyakan ulang.
 
-            Setelah tanggal_kunjungan_dijawab = true, tampilkan ringkasan
-            LENGKAP (termasuk tanggal kunjungan yang baru dicatat) lalu minta
-            konfirmasi akhir ("ya"/"tidak") sebagai pertanyaan TERSENDIRI.
-            JANGAN pernah menganggap persetujuan umum yang disampaikan user
-            SEBELUM tanggal ditanyakan (mis. "iya sudah benar" terhadap
-            ringkasan yang belum ada tanggalnya) sebagai konfirmasi booking
-            final - user harus benar-benar menjawab "ya" SETELAH melihat
-            ringkasan lengkap dengan tanggal di dalamnya. Set
-            extracted.konfirmasi true hanya pada giliran itu. Set
-            ready_for_next_state true HANYA setelah shift_pilihan terisi DAN
-            tanggal_kunjungan_dijawab = true (dengan tanggal_kunjungan terisi)
-            DAN konfirmasi terhadap ringkasan LENGKAP itu diterima.
+            Begitu shift_pilihan DAN tanggal_kunjungan_dijawab = true (dengan
+            tanggal_kunjungan terisi) sudah terpenuhi PADA GILIRAN YANG SAMA,
+            LANGSUNG set ready_for_next_state = true - JANGAN tampilkan
+            ringkasan lagi ATAU meminta konfirmasi "ya"/"tidak" terpisah di
+            sini. Sistem (bukan kamu) yang akan mengecek jadwal yang BENAR-
+            BENAR tersedia (bukan sekadar tanggal yang diminta user) dan
+            menanyakan konfirmasi akhir ke user - kalau kamu JUGA menampilkan
+            ringkasan+minta konfirmasi di giliran ini, user akan ditanya
+            "apakah setuju dengan jadwal ini" DUA KALI berturut-turut untuk
+            hal yang sama (sekali olehmu, sekali oleh sistem) - itu SALAH,
+            cukup SATU KALI oleh sistem saja. Balasanmu pada giliran ini
+            cukup singkat mengonfirmasi data sudah lengkap (mis. "Baik, data
+            kunjungannya sudah lengkap.") TANPA menjanjikan/menyebut jadwal
+            spesifik apapun - balasan ini normalnya tidak akan pernah dilihat
+            user karena langsung digantikan sistem, tapi tetap harus aman
+            kalau sampai terpakai (jangan melanggar aturan "jangan bilang
+            booking sudah berhasil" di ATURAN WAJIB).
             TXT;
     }
 

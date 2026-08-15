@@ -119,18 +119,13 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             return;
         }
 
-        // Direkam SEBELUM mergeContext() supaya handleStateTwo() bisa membedakan
-        // "tanggal baru saja dijawab giliran ini" vs "sudah dijawab giliran
-        // sebelumnya" - lihat catatan di handleStateTwo().
-        $tanggalSudahDijawabSebelumnya = ($session->context['tanggal_kunjungan_dijawab'] ?? false) === true;
-
         $this->resetIfDifferentPatient($session, $result['extracted']);
         $this->mergeContext($session, $result['extracted']);
 
         try {
             $reply = match ($session->state) {
                 ChatState::PengumpulanData => $this->handleStateOne($session, $result, $gtk, $matcher),
-                ChatState::Konfirmasi => $this->handleStateTwo($session, $result, $antrean, $quota, $tanggalSudahDijawabSebelumnya),
+                ChatState::Konfirmasi => $this->handleStateTwo($session, $result, $antrean, $quota),
                 ChatState::Done => $this->handleStateThree($session, $result, $antrean),
             };
         } catch (GtkApiException $e) {
@@ -672,10 +667,20 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
         // poli_pilihan biasanya sudah terisi dari hasil klasifikasi keluhan
         // di STATE_1 (lihat AiEngineService::stateOnePrompt) - jangan minta
-        // pilih ulang, cukup minta shift + konfirmasi akhir.
+        // pilih ulang, cukup minta shift + konfirmasi akhir. jenis_layanan
+        // WAJIB juga sudah terisi di titik ini (jenis_layanan_dijawab adalah
+        // salah satu syarat ready_for_next_state di handleStateOne()) -
+        // sertakan labelnya di sini supaya pesan transisi STATE_1->STATE_2
+        // tidak diam-diam "lupa" menyebutkan kategori Pemeriksaan/Konsultasi
+        // yang baru saja disepakati, cuma menyebut nama poliklinik saja.
         if (filled($context['poli_pilihan'] ?? null)) {
+            $jenisLabel = JenisLayanan::tryFrom((string) ($context['jenis_layanan'] ?? ''))?->label();
+            $layananText = $jenisLabel
+                ? "kategori layanan {$jenisLabel} pada {$context['poli_pilihan']}"
+                : $context['poli_pilihan'];
+
             return "Terima kasih. Data {$context['nama']} sudah tersimpan (No. RM: {$noRm}).\n\n"
-                ."Untuk layanan {$context['poli_pilihan']}, silakan pilih shift kunjungan (Pagi/Sore/Malam).";
+                ."Untuk {$layananText}, silakan pilih shift kunjungan (Pagi/Sore/Malam).";
         }
 
         $poliOptions = Poliklinik::query()->where('is_active', true)->pluck('nama_poliklinik')->implode(', ');
@@ -994,12 +999,11 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
      * STATE_2_KONFIRMASI - pilih poliklinik & shift, cek kuota, buat booking
      * atau waitlist (§3.1 langkah 4-5 & §3.2 PRD).
      */
-    protected function handleStateTwo(ChatSession $session, array $result, AntreanService $antrean, QuotaService $quota, bool $tanggalSudahDijawabSebelumnya): string
+    protected function handleStateTwo(ChatSession $session, array $result, AntreanService $antrean, QuotaService $quota): string
     {
         $context = $session->context;
-        $confirmed = (bool) ($result['extracted']['konfirmasi'] ?? false);
 
-        if (! $confirmed || ! $result['ready_for_next_state']) {
+        if (! $result['ready_for_next_state']) {
             return $result['reply'];
         }
 
@@ -1021,20 +1025,17 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             return $result['reply'];
         }
 
-        // Pernah kejadian nyata: AI langsung set konfirmasi=true PERSIS di
-        // giliran yang sama saat tanggal_kunjungan_dijawab baru pertama kali
-        // jadi true (mis. user cuma jawab "6 Agustus" singkat) - melanggar
-        // instruksi prompt sendiri bahwa konfirmasi akhir wajib jadi
-        // pertanyaan TERPISAH setelah ringkasan lengkap (dengan tanggal)
-        // ditampilkan. Kalau dibiarkan, user tidak pernah benar-benar melihat
-        // & menyetujui tanggal final sebelum booking dibuat. Paksa alur
-        // tampilkan ringkasan dulu ($result['reply']) - konfirmasi baru
-        // dihormati pada giliran BERIKUTNYA, setelah tanggal ini sudah
-        // pernah ditampilkan ke user.
-        if (! $tanggalSudahDijawabSebelumnya) {
-            return $result['reply'];
-        }
-
+        // Sengaja TIDAK menunggu konfirmasi terpisah dari AI di sini
+        // (dulu ada gate "tanggalSudahDijawabSebelumnya" + extracted.konfirmasi
+        // yang memaksa satu giliran ekstra "ringkasan lalu konfirmasi" versi
+        // AI) - itu menghasilkan DUA kali tanya-konfirmasi berturut-turut ke
+        // user (versi AI, lalu versi server di bawah), padahal cuma perlu
+        // satu. Begitu shift+tanggal terisi, langsung lanjut ke resolusi
+        // slot & tawarkan SATU KALI lewat mekanisme slot_ditawarkan di bawah
+        // - itu sudah cukup sebagai titik "user benar-benar melihat &
+        // menyetujui tanggal final sebelum booking dibuat" (server-composed,
+        // bukan ringkasan AI, dan tetap wajib giliran TERPISAH sebelum
+        // createBooking() dipanggil - lihat komentar slot_ditawarkan).
         $tanggalRaw = is_string($tanggalInput) ? trim($tanggalInput) : null;
         $tanggalSecepatnya = $tanggalRaw !== null && strtolower($tanggalRaw) === 'secepatnya';
 
