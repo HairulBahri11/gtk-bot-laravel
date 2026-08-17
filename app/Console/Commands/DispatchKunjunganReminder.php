@@ -75,7 +75,17 @@ class DispatchKunjunganReminder extends Command
         $connection->transaction(function () use ($connection, &$sent, &$skipped, &$candidates, $namaLike) {
             $rows = $connection->select(<<<'SQL'
                 select *,
-                  (jadwal_at - (now() at time zone 'Asia/Jakarta')) <= interval '24 hours' as due_h1hari,
+                  -- Kejadian nyata (bug): kunjungan yang DIBUAT hari ini
+                  -- UNTUK hari ini juga (jarak ke jadwal_at < 24 jam murni
+                  -- karena sama-sama hari ini, BUKAN karena besok sudah
+                  -- dekat) sempat lolos due_h1hari & terkirim reminder
+                  -- berlabel "besok" - padahal kunjungannya hari ini.
+                  -- Wajib DUA syarat sekaligus: jarak <= 24 jam DAN
+                  -- jadwal_at jatuh di TANGGAL KALENDER setelah hari ini -
+                  -- kalau kunjungannya sendiri hari ini, h1hari tidak
+                  -- pernah relevan sama sekali (bukan cuma ditunda).
+                  (jadwal_at - (now() at time zone 'Asia/Jakarta')) <= interval '24 hours'
+                    and jadwal_at::date > (now() at time zone 'Asia/Jakarta')::date as due_h1hari,
                   (jadwal_at - (now() at time zone 'Asia/Jakarta')) <= interval '3 hours'  as due_h3jam,
                   (jadwal_at - (now() at time zone 'Asia/Jakarta')) <= interval '1 hour'   as due_h1jam
                 from kunjungan_reminder
