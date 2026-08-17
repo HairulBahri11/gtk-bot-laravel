@@ -9,8 +9,10 @@ RUN npm run build
 # ---- Stage 2: install dependency PHP ----
 FROM composer:2 AS composer-build
 WORKDIR /app
+COPY composer.json composer.lock ./
+RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs --no-scripts --no-autoloader
 COPY . .
-RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs
+RUN composer dump-autoload --no-dev --optimize
 
 # ---- Stage 3: runtime image (nginx + php-fpm dalam satu container) ----
 FROM php:8.2-fpm-alpine
