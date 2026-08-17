@@ -146,6 +146,178 @@ class WhatsappWebhookTest extends TestCase
     }
 
     /**
+     * Kejadian nyata (testing WA): dua dokter sama-sama praktik di
+     * poliklinik+tanggal+shift yang sama, pasien eksplisit menyebutkan
+     * nama dokter di jawaban jadwal kunjungan - tapi sistem lama diam-diam
+     * memilih dokter LAIN (urutan query semata) mengabaikan permintaan
+     * pasien. Sekarang begitu dokter_pilihan diisi & cocok salah satu
+     * kandidat, booking WAJIB jatuh ke dokter itu - tanpa giliran
+     * konfirmasi tambahan (tanggal+dokter sama-sama eksplisit dari pasien
+     * sendiri).
+     */
+    public function test_booking_uses_requested_doctor_when_multiple_doctors_available(): void
+    {
+        $this->seedMasterData();
+
+        $requestedDate = now()->addDays(7)->toDateString();
+
+        Doctor::create([
+            'kode_dokter' => 'D02',
+            'nama_dokter' => 'dr. Doni Saputra',
+            'kode_poliklinik' => '01',
+            'is_active' => true,
+        ]);
+
+        $hariMap = [
+            'Monday' => 'SENIN', 'Tuesday' => 'SELASA', 'Wednesday' => 'RABU',
+            'Thursday' => 'KAMIS', 'Friday' => 'JUMAT', 'Saturday' => 'SABTU', 'Sunday' => 'MINGGU',
+        ];
+
+        DoctorSchedule::create([
+            'kode_dokter' => 'D02',
+            'kode_poliklinik' => '01',
+            'hari' => $hariMap[now()->format('l')],
+            'jam_mulai' => '08:00',
+            'jam_selesai' => '12:00',
+            'shift' => 'pagi',
+            'kuota_total' => 5,
+            'source' => 'manual',
+        ]);
+
+        foreach (['D01', 'D02'] as $kodeDokter) {
+            QuotaShift::create([
+                'kode_dokter' => $kodeDokter,
+                'kode_poliklinik' => '01',
+                'tanggal' => $requestedDate,
+                'shift' => 'pagi',
+                'kuota_total' => 5,
+                'kuota_terpakai' => 0,
+            ]);
+        }
+
+        $fakeWa = new FakeWhatsAppService;
+        $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
+
+        Http::fake([
+            'openrouter.ai/*' => Http::response($this->openRouterResponse($this->stateOneAiContent([
+                'tanggal_kunjungan' => $requestedDate,
+                'dokter_pilihan' => 'dr. Doni Saputra',
+            ])), 200),
+            '*url=auth*' => Http::response($this->gtkOk(['token' => 'test-token']), 200),
+            '*url=caripasien*' => Http::response($this->gtkFail('Data tidak ditemukan', 404), 200),
+            '*url=tambahpasien*' => Http::response($this->gtkOk(['no_rkm_medis' => '000099'], 'Pasien baru berhasil didaftarkan'), 200),
+            '*url=regpasien*' => Http::response($this->gtkOk(['no_rawat' => '2026/07/27/000001', 'no_reg' => '1'], 'Registrasi berhasil'), 200),
+        ]);
+
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Anak saya Budi, lahir 2021-01-01, ibu Sari, keluhan demam, laki-laki',
+            ],
+        ])->assertOk();
+
+        $booking = Booking::query()->where('no_rm', '000099')->firstOrFail();
+        $this->assertSame(BookingStatus::Booked, $booking->status);
+        $this->assertSame('D02', $booking->kode_dokter);
+    }
+
+    /**
+     * Sama seperti test di atas TAPI pasien TIDAK menyebutkan dokter mana
+     * yang diinginkan - sistem WAJIB bertanya dulu (bukan diam-diam
+     * memilihkan salah satu), baru booking begitu dokter dipilih di
+     * giliran berikutnya.
+     */
+    public function test_booking_asks_which_doctor_when_multiple_available_then_books_chosen_one(): void
+    {
+        $this->seedMasterData();
+
+        $requestedDate = now()->addDays(7)->toDateString();
+
+        Doctor::create([
+            'kode_dokter' => 'D02',
+            'nama_dokter' => 'dr. Doni Saputra',
+            'kode_poliklinik' => '01',
+            'is_active' => true,
+        ]);
+
+        $hariMap = [
+            'Monday' => 'SENIN', 'Tuesday' => 'SELASA', 'Wednesday' => 'RABU',
+            'Thursday' => 'KAMIS', 'Friday' => 'JUMAT', 'Saturday' => 'SABTU', 'Sunday' => 'MINGGU',
+        ];
+
+        DoctorSchedule::create([
+            'kode_dokter' => 'D02',
+            'kode_poliklinik' => '01',
+            'hari' => $hariMap[now()->format('l')],
+            'jam_mulai' => '08:00',
+            'jam_selesai' => '12:00',
+            'shift' => 'pagi',
+            'kuota_total' => 5,
+            'source' => 'manual',
+        ]);
+
+        foreach (['D01', 'D02'] as $kodeDokter) {
+            QuotaShift::create([
+                'kode_dokter' => $kodeDokter,
+                'kode_poliklinik' => '01',
+                'tanggal' => $requestedDate,
+                'shift' => 'pagi',
+                'kuota_total' => 5,
+                'kuota_terpakai' => 0,
+            ]);
+        }
+
+        $fakeWa = new FakeWhatsAppService;
+        $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
+
+        Http::fake([
+            'openrouter.ai/*' => Http::sequence()
+                ->push($this->openRouterResponse($this->stateOneAiContent(['tanggal_kunjungan' => $requestedDate])), 200)
+                ->push($this->openRouterResponse(json_encode([
+                    'reply' => 'Baik, dr. Doni Saputra.',
+                    'extracted' => ['dokter_pilihan' => 'dr. Doni Saputra'],
+                    'ready_for_next_state' => true,
+                ])), 200),
+            '*url=auth*' => Http::response($this->gtkOk(['token' => 'test-token']), 200),
+            '*url=caripasien*' => Http::response($this->gtkFail('Data tidak ditemukan', 404), 200),
+            '*url=tambahpasien*' => Http::response($this->gtkOk(['no_rkm_medis' => '000099'], 'Pasien baru berhasil didaftarkan'), 200),
+            '*url=regpasien*' => Http::response($this->gtkOk(['no_rawat' => '2026/07/27/000001', 'no_reg' => '1'], 'Registrasi berhasil'), 200),
+        ]);
+
+        // Giliran 1: formulir lengkap TANPA preferensi dokter -> dua dokter
+        // tersedia di tanggal/shift yang sama, sistem WAJIB bertanya dulu.
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Anak saya Budi, lahir 2021-01-01, ibu Sari, keluhan demam, laki-laki',
+            ],
+        ])->assertOk();
+
+        $this->assertSame(0, Booking::query()->count());
+        $this->assertStringContainsString('dr. Rina Puspita', $fakeWa->sent[0]['message']);
+        $this->assertStringContainsString('dr. Doni Saputra', $fakeWa->sent[0]['message']);
+
+        // Giliran 2: pasien menyebutkan dokter pilihannya -> booking langsung
+        // dibuat untuk dokter itu (tanggal sudah eksplisit dari giliran 1).
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'dr. Doni Saputra saja',
+            ],
+        ])->assertOk();
+
+        $booking = Booking::query()->where('no_rm', '000099')->firstOrFail();
+        $this->assertSame(BookingStatus::Booked, $booking->status);
+        $this->assertSame('D02', $booking->kode_dokter);
+    }
+
+    /**
      * Jadwal kunjungan (shift_pilihan + tanggal_kunjungan_dijawab) kini
      * bagian dari formulir STATE_1 itu sendiri (bukan ditanyakan belakangan
      * di STATE_2 lagi) - kalau AI keliru langsung set ready_for_next_state

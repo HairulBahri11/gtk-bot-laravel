@@ -578,6 +578,14 @@ class AiEngineService
                     maupun bilang "secepatnya"/"terserah" secara eksplisit),
                     false/null kalau pertanyaan itu belum pernah diajukan
                     atau belum dijawab user - lihat STATE_2_KONFIRMASI>,
+                  "dokter_pilihan": "<nama dokter (apa adanya sesuai yang
+                    disebut user, mis. \"dr Dwi Andriyani\") HANYA kalau user
+                    benar-benar menyebutkan nama dokter tertentu (baik
+                    spontan di jawaban jadwal kunjungan MAUPUN sebagai
+                    jawaban atas pertanyaan sistem yang menawarkan pilihan
+                    dokter), atau null kalau tidak disebutkan - field ini
+                    OPSIONAL, JANGAN PERNAH menebak/mengisi sendiri dokter
+                    mana yang dimaksud user kalau tidak disebutkan eksplisit>",
                   "konfirmasi": <true|false|null - jawaban terhadap
                     PERTANYAAN KONFIRMASI TERAKHIR yang diajukan asisten
                     (lihat giliran "assistant" paling akhir di riwayat
@@ -840,12 +848,22 @@ class AiEngineService
                tanggal_kunjungan DAN tanggal_kunjungan_dijawab WAJIB diisi
                BERSAMAAN persis seperti field lain yang berpasangan di
                prompt ini - JANGAN PERNAH tanggal_kunjungan_dijawab = true
-               dengan tanggal_kunjungan kosong. Boleh pakai jadwal praktik
-               di pesan pertama (lihat di atas) sebagai acuan saat orang tua
-               bertanya "hari apa saja bisa" - TAPI ketersediaan KUOTA
-               riil pada tanggal/sesi yang diminta baru dicek sistem setelah
-               SELURUH formulir ini lengkap, bukan di sini; kalau ternyata
-               penuh/tidak tersedia, sistem akan menawarkan alternatif pada
+               dengan tanggal_kunjungan kosong. Kalau orang tua JUGA
+               menyebutkan nama dokter tertentu di jawaban yang sama (mis.
+               "dr Dwi Andriyani, 18 Agustus, sesi pagi" - lihat jadwal
+               praktik per dokter di pesan pertama), isi extracted.dokter_pilihan
+               dengan nama dokter itu apa adanya - field ini OPSIONAL,
+               JANGAN tanyakan secara terpisah/wajib kalau tidak disebutkan
+               sendiri oleh orang tua di sini (sistem yang akan menanyakannya
+               belakangan HANYA kalau ternyata ada lebih dari satu dokter
+               untuk tanggal/sesi yang diminta DAN dokter_pilihan masih
+               kosong - lihat instruksi fallback di bawah). Boleh pakai
+               jadwal praktik di pesan pertama (lihat di atas) sebagai acuan
+               saat orang tua bertanya "hari apa saja bisa" - TAPI
+               ketersediaan KUOTA riil pada tanggal/sesi yang diminta baru
+               dicek sistem setelah SELURUH formulir ini lengkap, bukan di
+               sini; kalau ternyata penuh/tidak tersedia, sistem akan
+               menawarkan alternatif pada
                giliran berikutnya - tugasmu di sini murni menangkap
                preferensi awal orang tua apa adanya.
                Mode satu-per-satu HANYA dipakai sebagai fallback: kalau
@@ -975,6 +993,18 @@ class AiEngineService
             Gizi", atau "untuk Konsultasi Tumbuh Kembang" - ini menentukan
             kuota mana yang dipakai, jangan sampai terlewat dari ringkasan).
             Hanya tanyakan poli_pilihan jika memang masih kosong.
+
+            Kalau pesan "assistant" PALING AKHIR di riwayat percakapan
+            menanyakan orang tua memilih SATU dokter dari beberapa nama
+            (sistem yang menyusun pertanyaan itu, BUKAN kamu - muncul kalau
+            lebih dari satu dokter tersedia untuk tanggal/sesi yang sudah
+            diminta; shift_pilihan & tanggal_kunjungan_dijawab SEHARUSNYA
+            sudah lengkap di titik ini, itu sebabnya pertanyaan ini yang
+            muncul, bukan pertanyaan field lain), balasan user di giliran
+            ini HANYA berisi nama dokter pilihannya - isi
+            extracted.dokter_pilihan dengan nama itu apa adanya DAN langsung
+            set ready_for_next_state = true, field lain TIDAK perlu
+            ditanyakan ulang.
 
             Tanyakan dua hal berikut (boleh digabung natural dalam satu pesan)
             kalau belum terisi di data terkumpul:

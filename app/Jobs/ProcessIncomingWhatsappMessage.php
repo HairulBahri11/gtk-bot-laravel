@@ -510,7 +510,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         'nama', 'tanggal_lahir', 'tempat_lahir', 'nama_ibu_kandung', 'jenis_kelamin', 'no_hp',
         'no_hp_dikonfirmasi', 'keluhan', 'poli_pilihan', 'poli_disetujui',
         'jenis_layanan', 'jenis_layanan_dijawab',
-        'shift_pilihan', 'tanggal_kunjungan', 'tanggal_kunjungan_dijawab',
+        'shift_pilihan', 'tanggal_kunjungan', 'tanggal_kunjungan_dijawab', 'dokter_pilihan',
     ];
 
     protected function mergeContext(ChatSession $session, array $extracted): void
@@ -687,6 +687,16 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             return $resolution['reply'];
         }
 
+        // resolvePatient() (lewat handleProbableMatch()) bisa saja
+        // menghapus/mengubah context (mis. unset pasien_ditawarkan begitu
+        // dikonfirmasi) pada SALINANnya sendiri - array di PHP passed by
+        // value, jadi $context lokal method ini TIDAK ikut berubah kecuali
+        // di-assign ulang dari context yang dikembalikan di sini. Tanpa
+        // baris ini, resolveSlotAndReply() di bawah akan menuliskan balik
+        // $context versi BASI ke $session->context & menghapus efek
+        // perubahan itu.
+        $context = $resolution['context'];
+
         $noRm = $resolution['no_rm'];
         $session->no_rm = $noRm;
         $session->state = ChatState::Konfirmasi->value;
@@ -734,7 +744,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
      *   membuat duplikat padahal pasiennya sudah ada.
      * - NoMatch: buat pasien baru, PERSIS seperti perilaku lama.
      *
-     * @return array{awaiting_confirmation: bool, reply: ?string, no_rm: ?string}
+     * @return array{awaiting_confirmation: bool, reply: ?string, no_rm: ?string, context: array}
      */
     protected function resolvePatient(ChatSession $session, GtkApiService $gtk, PatientMatcher $matcher, array $context, array $result): array
     {
@@ -799,9 +809,17 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             $session->context = $context;
         }
 
-        return $evaluation['verdict'] === PatientMatchVerdict::Confident
+        $resolution = $evaluation['verdict'] === PatientMatchVerdict::Confident
             ? $this->commitMatchedPatient($evaluation['candidate'], $context, $noHp)
             : $this->createNewPatient($gtk, $context, $noHp);
+
+        // WAJIB kembalikan $context versi TERKINI (bukan cuma no_rm/reply) -
+        // pemanggil (handleStateOne()) punya salinan $context-nya sendiri
+        // yang TIDAK ikut berubah oleh unset() pasien_ditawarkan di atas
+        // (array di PHP passed by value), jadi tanpa ini pemanggil akan
+        // lanjut memakai salinan basi yang masih menyimpan pasien_ditawarkan
+        // - lihat komentar serupa di handleProbableMatch().
+        return [...$resolution, 'context' => $context];
     }
 
     /**
@@ -816,7 +834,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
      * karena user mengoreksi data) DAN AI menandai extracted.konfirmasi
      * true (user menjawab "ya"), kandidat ini benar-benar dipakai.
      *
-     * @return array{awaiting_confirmation: bool, reply: ?string, no_rm: ?string}
+     * @return array{awaiting_confirmation: bool, reply: ?string, no_rm: ?string, context: array}
      */
     protected function handleProbableMatch(ChatSession $session, array $context, array $result, array $candidate, string $noHp): array
     {
@@ -830,6 +848,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
                 'awaiting_confirmation' => true,
                 'reply' => $this->buildPatientConfirmationQuestion($candidate),
                 'no_rm' => null,
+                'context' => $context,
             ];
         }
 
@@ -839,13 +858,21 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         $confirmed = ($result['extracted']['konfirmasi'] ?? false) === true;
 
         if (! $confirmed) {
-            return ['awaiting_confirmation' => true, 'reply' => $result['reply'], 'no_rm' => null];
+            return ['awaiting_confirmation' => true, 'reply' => $result['reply'], 'no_rm' => null, 'context' => $context];
         }
 
         unset($context['pasien_ditawarkan']);
         $session->context = $context;
 
-        return $this->commitMatchedPatient($candidate, $context, $noHp);
+        // WAJIB sertakan $context TERKINI (sudah tanpa pasien_ditawarkan) di
+        // hasil - resolvePatient() dan handleStateOne() memegang salinan
+        // $context mereka SENDIRI (array di PHP passed by value), jadi tanpa
+        // ini pemanggil akan lanjut memakai salinan basi yang masih
+        // menyimpan pasien_ditawarkan, lalu diam-diam menuliskannya balik ke
+        // $session->context lewat resolveSlotAndReply() setelah ini,
+        // menghapus efek unset() di atas (kejadian nyata - lihat test
+        // test_probable_name_match_asks_confirmation_then_reuses_existing_no_rm).
+        return [...$this->commitMatchedPatient($candidate, $context, $noHp), 'context' => $context];
     }
 
     protected function buildPatientConfirmationQuestion(array $candidate): string
@@ -1137,9 +1164,9 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
                 return 'Mohon sebutkan tanggal kunjungan yang valid, mulai hari ini atau setelahnya (mis. "20 Agustus 2026").';
             }
 
-            $slot = $this->findSlotOnDate($poli->kode_poliklinik, $shift, $requestedDate, $quota, $jenis);
+            $schedulesForDate = $this->schedulesForDateShift($poli->kode_poliklinik, $shift, $requestedDate);
 
-            if (! $slot) {
+            if ($schedulesForDate->isEmpty()) {
                 unset($context['tanggal_kunjungan'], $context['tanggal_kunjungan_dijawab']);
                 $session->context = $context;
 
@@ -1154,6 +1181,47 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
                     .$requestedDate->toDateString().'. Tanggal terdekat yang tersedia: '
                     .implode(', ', $alternatif).'. Silakan pilih salah satu.';
             }
+
+            $dokterInput = is_string($context['dokter_pilihan'] ?? null) ? trim($context['dokter_pilihan']) : '';
+            $namaDokterTersedia = fn () => $schedulesForDate
+                ->map(fn (DoctorSchedule $s) => $s->doctor?->nama_dokter ?? $s->kode_dokter)
+                ->unique()
+                ->implode(', ');
+
+            if ($dokterInput !== '') {
+                $matchedSchedules = $schedulesForDate->filter(
+                    fn (DoctorSchedule $s) => $this->doctorNameMatches($s->doctor?->nama_dokter ?? $s->kode_dokter, $dokterInput)
+                );
+
+                if ($matchedSchedules->isEmpty()) {
+                    return "Maaf, dokter \"{$dokterInput}\" tidak praktik pada tanggal/shift ini. "
+                        ."Dokter yang tersedia: {$namaDokterTersedia()}. Silakan pilih salah satu.";
+                }
+
+                $schedulesForDate = $matchedSchedules;
+            } elseif ($schedulesForDate->pluck('kode_dokter')->unique()->count() > 1) {
+                // Lebih dari satu dokter berbeda tersedia di poliklinik+
+                // tanggal+shift yang sama TAPI orang tua belum menyebutkan
+                // preferensi dokter - JANGAN diam-diam dipilihkan salah satu
+                // (kejadian nyata: orang tua eksplisit minta dr. Dwi
+                // Andriyani, tapi sistem lama memilih dr. Retno Wulandari
+                // semata karena urutan query, bukan permintaan pasien).
+                // Tanyakan dulu, server yang menyusun pertanyaannya (bukan
+                // AI) - sama seperti prinsip slot_ditawarkan. dokter_pilihan
+                // akan terisi dari jawaban giliran berikutnya, lalu method
+                // ini dievaluasi ulang dari awal (pola yang sama dengan
+                // resolvePatient() dievaluasi ulang tiap giliran).
+                $daftarDokter = $schedulesForDate
+                    ->map(fn (DoctorSchedule $s) => ($s->doctor?->nama_dokter ?? $s->kode_dokter)
+                        .' (pukul '.$this->formatJamRange($s->jam_mulai, $s->jam_selesai).')')
+                    ->unique()
+                    ->implode(', ');
+
+                return "Untuk poliklinik {$poli->nama_poliklinik} shift {$shift->label()} pada tanggal yang diminta tersedia lebih dari satu dokter: "
+                    ."{$daftarDokter}. Silakan sebutkan dokter mana yang Bunda/Ayah inginkan.";
+            }
+
+            $slot = $this->findSlotOnDate($requestedDate, $shift, $quota, $jenis, $schedulesForDate);
         } else {
             $slot = $this->findNearestSlot($poli->kode_poliklinik, $shift, $quota, $jenis);
 
@@ -1374,37 +1442,82 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
     }
 
     /**
-     * Cari dokter yang terjadwal pada poliklinik & shift TEPAT di tanggal
-     * yang diminta user (bukan tanggal terdekat) - dipakai saat user
-     * menyebutkan preferensi tanggal kunjungan sendiri. Kuota per tanggal
-     * ini baru divalidasi belakangan oleh AntreanService::createBooking()
-     * (fallback ke waitlist jika penuh, atau kalau tanggalnya di luar
-     * jendela sinkronisasi quota_shifts §3.2 PRD) - di sini kita hanya
-     * mengonfirmasi bahwa poliklinik memang buka di hari itu.
+     * Jadwal dokter (source='manual') pada poliklinik+shift+HARI yang sama
+     * dengan $date (pola mingguan by nama hari, BUKAN match tanggal_lahir
+     * spesifik - lihat DoctorSchedule::hari). Query bersama dipakai oleh
+     * findSlotOnDate() (memilih SATU) maupun resolveSlotAndReply()
+     * (mendeteksi lebih dari satu dokter SEBELUM memilih, supaya bisa
+     * ditawarkan ke user alih-alih diam-diam dipilihkan - lihat komentar
+     * di findSlotOnDate() & resolveSlotAndReply()) supaya query-nya tidak
+     * dobel/berisiko tidak sinkron.
      *
-     * @return array{tanggal: string, kode_dokter: string, jam_mulai: string, jam_selesai: string}|null
+     * @return Collection<int, DoctorSchedule>
      */
-    protected function findSlotOnDate(string $kodePoliklinik, Shift $shift, Carbon $date, QuotaService $quota, JenisLayanan $jenis): ?array
+    protected function schedulesForDateShift(string $kodePoliklinik, Shift $shift, Carbon $date): Collection
     {
         $hari = self::HARI_BY_ISO[$date->dayOfWeekIso] ?? null;
 
-        // Ambil SEMUA dokter yang cocok, bukan cuma first() - pernah kejadian
-        // nyata lebih dari satu dokter berbeda berbagi label shift yang sama
-        // pada hari yang sama (mis. shift "sore" dipecah 14:00-17:00 &
-        // 17:00-19:00 untuk dokter berbeda). Tanpa ini, first() memilih
-        // dokter secara arbitrer (tergantung urutan baris DB, bukan
-        // keputusan yang berarti) - user bisa "beruntungan" diarahkan ke
-        // dokter yang kuotanya sudah penuh sementara dokter lain masih
-        // longgar. Urutkan by jam_mulai untuk determinisme, lalu utamakan
-        // yang kuotanya masih tersedia.
-        $schedules = DoctorSchedule::query()
+        return DoctorSchedule::query()
+            ->with('doctor')
             ->where('kode_poliklinik', $kodePoliklinik)
             ->where('shift', $shift->value)
             ->where('hari', $hari)
             ->where('source', 'manual')
             ->orderBy('jam_mulai')
             ->get();
+    }
 
+    /**
+     * Cocokkan nama dokter yang disebut user (mis. "dr Dwi andriyani",
+     * bebas format) terhadap nama_dokter tersimpan (mis. "dr. Dwi
+     * Andriyani, Sp.A") - buang tanda baca & normalisasi spasi/kapital
+     * dulu di kedua sisi (supaya beda titik/koma semata mis. "dr" vs
+     * "dr." tidak menggagalkan match), baru cek substring DUA ARAH (nama
+     * lengkap tersimpan biasanya memuat gelar tambahan yang tidak
+     * disebut user, jadi arah "nama tersimpan memuat input user" yang
+     * paling umum kepakai). Daftar dokter per poliklinik kecil & namanya
+     * cukup berbeda satu sama lain, jadi substring sederhana ini cukup -
+     * tidak perlu skor kemiripan bertoleransi typo seperti NameSimilarity
+     * (itu didesain untuk nama PASIEN, bukan memilih dari daftar pendek
+     * yang sudah diketahui).
+     */
+    protected function doctorNameMatches(string $namaDokter, string $input): bool
+    {
+        $normalize = fn (string $v) => trim(preg_replace('/\s+/', ' ', preg_replace('/[^\p{L}\p{N}\s]/u', '', mb_strtolower($v))) ?? '');
+
+        $nama = $normalize($namaDokter);
+        $cari = $normalize($input);
+
+        if ($nama === '' || $cari === '') {
+            return false;
+        }
+
+        return str_contains($nama, $cari) || str_contains($cari, $nama);
+    }
+
+    /**
+     * Pilih SATU dokter dari kandidat jadwal poliklinik & shift TEPAT di
+     * tanggal yang diminta user (bukan tanggal terdekat) - dipakai saat
+     * user menyebutkan preferensi tanggal kunjungan sendiri. Kuota per
+     * tanggal ini baru divalidasi belakangan oleh
+     * AntreanService::createBooking() (fallback ke waitlist jika penuh,
+     * atau kalau tanggalnya di luar jendela sinkronisasi quota_shifts
+     * §3.2 PRD) - di sini kita hanya mengonfirmasi bahwa poliklinik
+     * memang buka di hari itu.
+     *
+     * $schedules WAJIB sudah disaring pemanggil (lihat
+     * schedulesForDateShift() & resolveSlotAndReply()) - method ini tidak
+     * lagi query sendiri supaya pemanggil bisa mendeteksi & menawarkan
+     * pilihan dokter LEBIH DULU saat kandidatnya lebih dari satu (lihat
+     * komentar resolveSlotAndReply()), baru memanggil ini dengan kandidat
+     * yang sudah pasti satu dokter (atau memang cuma satu dokter yang
+     * tersedia dari awal).
+     *
+     * @param  Collection<int, DoctorSchedule>  $schedules
+     * @return array{tanggal: string, kode_dokter: string, jam_mulai: string, jam_selesai: string}|null
+     */
+    protected function findSlotOnDate(Carbon $date, Shift $shift, QuotaService $quota, JenisLayanan $jenis, Collection $schedules): ?array
+    {
         if ($schedules->isEmpty()) {
             return null;
         }
@@ -1508,7 +1621,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             // pernah benar-benar ditawarkan ulang untuk kunjungan baru ini.
             unset(
                 $context['poli_pilihan'], $context['poli_disetujui'],
-                $context['shift_pilihan'],
+                $context['shift_pilihan'], $context['dokter_pilihan'],
                 $context['jenis_layanan'], $context['jenis_layanan_dijawab'],
                 $context['tanggal_kunjungan'], $context['tanggal_kunjungan_dijawab'],
                 $context['slot_ditawarkan'],

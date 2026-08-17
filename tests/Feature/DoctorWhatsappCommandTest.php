@@ -141,10 +141,12 @@ class DoctorWhatsappCommandTest extends TestCase
         $openRouterContent = json_encode([
             'reply' => 'Baik, data sudah lengkap.',
             'extracted' => [
-                'nama' => 'Budi', 'tanggal_lahir' => '2021-01-01', 'nama_ibu_kandung' => 'Sari',
+                'nama' => 'Budi', 'tanggal_lahir' => '2021-01-01', 'tempat_lahir' => 'Jombang',
+                'nama_ibu_kandung' => 'Sari',
                 'jenis_kelamin' => 'LAKI-LAKI', 'no_hp' => '089999999999', 'no_hp_dikonfirmasi' => true,
                 'keluhan' => 'Demam', 'poli_pilihan' => 'Tumbuh Kembang Anak', 'poli_disetujui' => true,
                 'jenis_layanan' => 'pemeriksaan', 'jenis_layanan_dijawab' => true,
+                'shift_pilihan' => 'pagi', 'tanggal_kunjungan' => 'secepatnya', 'tanggal_kunjungan_dijawab' => true,
             ],
             'ready_for_next_state' => true,
         ]);
