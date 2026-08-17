@@ -9,11 +9,23 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Sync data kunjungan dari GTK API (GET /reminderkunjungan) ke tabel
- * kunjungan_reminder di Supabase, dibaca oleh Edge Function
- * dispatch-reminders (supabase/functions/dispatch-reminders) untuk kirim
- * reminder WA H-1 hari/3 jam/1 jam. HANYA sync - command ini TIDAK PERNAH
- * mengirim WA sama sekali, itu murni tugas dispatch-reminders.
+ * DINONAKTIFKAN - lihat routes/console.php (tidak lagi dijadwalkan) &
+ * App\Services\Reminder\KunjunganReminderService. kunjungan_reminder
+ * sekarang diisi LANGSUNG oleh AntreanService begitu booking di aplikasi
+ * ini sendiri berubah status (dibuat/dipromosikan dari waitlist/dibatalkan/
+ * no-show/dipindah shift), BUKAN lagi disinkronkan periodik dari GTK -
+ * jam_kunjungan sekarang mengikuti jam_mulai jadwal dokter yang benar-benar
+ * dipilih pasien, bukan apa pun yang dilaporkan endpoint reminderkunjungan
+ * GTK. Command ini dibiarkan ada (sama seperti gtk:send-reminders/
+ * SendAppointmentReminders sebelumnya) untuk dijalankan manual kalau suatu
+ * saat perlu backfill/audit dari sisi GTK - JANGAN dijadwalkan ulang tanpa
+ * mencabut dulu pemanggilan KunjunganReminderService di AntreanService,
+ * supaya tidak ada 2 sistem yang berebut menulis baris yang sama.
+ *
+ * Deskripsi asli method ini (sebelum dinonaktifkan): sync data kunjungan
+ * dari GTK API (GET /reminderkunjungan) ke tabel kunjungan_reminder di
+ * Supabase. HANYA sync - command ini TIDAK PERNAH mengirim WA sama sekali,
+ * itu murni tugas gtk:dispatch-kunjungan-reminder.
  *
  * Dijalankan sebagai command Laravel (bukan Supabase Edge Function) karena
  * GTK API hanya bisa diakses lewat ZeroTier VPN yang sudah di-join mesin

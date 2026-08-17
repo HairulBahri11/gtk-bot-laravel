@@ -14,6 +14,7 @@ use App\Models\QuotaShift;
 use App\Services\Gtk\GtkApiException;
 use App\Services\Gtk\GtkApiService;
 use App\Services\Quota\QuotaService;
+use App\Services\Reminder\KunjunganReminderService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -28,6 +29,7 @@ class AntreanService
     public function __construct(
         protected GtkApiService $gtk,
         protected QuotaService $quota,
+        protected KunjunganReminderService $reminder,
     ) {}
 
     /**
@@ -78,7 +80,7 @@ class AntreanService
             );
         }
 
-        return DB::transaction(function () use ($session, $data, $shift, $jenis, $tanggal) {
+        $booking = DB::transaction(function () use ($session, $data, $shift, $jenis, $tanggal) {
             $available = $this->quota->hasAvailability($data['kode_dokter'], $tanggal, $shift, $jenis);
 
             if (! $available) {
@@ -119,6 +121,18 @@ class AntreanService
 
             return $booking;
         });
+
+        // Di luar transaksi DB di atas dengan sengaja - ini efek samping
+        // best-effort ke koneksi Supabase yang TERPISAH ('pgsql'), bukan
+        // bagian dari atomisitas booking itu sendiri (lihat
+        // KunjunganReminderService). Hanya relevan untuk booking yang
+        // benar-benar dapat no_rawat (status Booked) - booking Waitlist
+        // belum pasti kapan/apakah akan benar-benar terjadi.
+        if ($booking->status === BookingStatus::Booked) {
+            $this->reminder->upsertForBooking($booking);
+        }
+
+        return $booking;
     }
 
     /**
@@ -328,6 +342,8 @@ class AntreanService
             'cancel_reason' => $reason,
         ]);
 
+        $this->reminder->cancelForBooking($booking);
+
         if ($wasHoldingSlot) {
             $this->quota->releaseSlot($booking->kode_dokter, $booking->tanggal_periksa->toDateString(), $booking->shift, $booking->jenis_layanan);
             $this->promoteWaitlist($booking->kode_dokter, $booking->tanggal_periksa->toDateString(), $booking->shift, $booking->jenis_layanan, 1);
@@ -356,6 +372,8 @@ class AntreanService
             'cancel_reason' => $reason,
             'buffer_shifted_count' => $buffer,
         ]);
+
+        $this->reminder->cancelForBooking($booking);
 
         $this->quota->releaseSlot($booking->kode_dokter, $tanggal, $booking->shift, $booking->jenis_layanan);
         $this->quota->shiftBuffer($booking->kode_dokter, $tanggal, $booking->shift, $booking->jenis_layanan, $buffer);
@@ -414,6 +432,7 @@ class AntreanService
                 ]);
 
                 $this->quota->reserveSlot($kodeDokter, $tanggal, $shift, $jenis);
+                $this->reminder->upsertForBooking($candidate);
             } catch (GtkApiException $e) {
                 Log::warning('Gagal promosikan waitlist', [
                     'booking_id' => $candidate->id,
@@ -607,6 +626,12 @@ class AntreanService
                 'cancel_reason' => $reason,
                 'rescheduled_to_booking_id' => $newBooking->id,
             ]);
+
+            // Kunjungan lama (jam/shift lama) sudah tidak berlaku - batalkan
+            // reminder-nya (kalau ada), lalu buat baru untuk jadwal
+            // penggantinya (jam_mulai shift BARU, lihat KunjunganReminderService).
+            $this->reminder->cancelForBooking($booking);
+            $this->reminder->upsertForBooking($newBooking);
 
             return $newBooking;
         } catch (\Throwable $e) {

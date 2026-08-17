@@ -7,13 +7,19 @@ use App\Enums\JenisLayanan;
 use App\Enums\Shift;
 use App\Jobs\NotifyQueueStatusJob;
 use App\Models\Booking;
+use App\Models\ChatSession;
 use App\Models\Doctor;
+use App\Models\DoctorSchedule;
 use App\Models\Patient;
 use App\Models\Poliklinik;
+use App\Models\QuotaShift;
 use App\Models\User;
 use App\Services\Antrean\AntreanService;
+use App\Services\Reminder\KunjunganReminderService;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class AntreanQueueNumberTest extends TestCase
@@ -32,6 +38,66 @@ class AntreanQueueNumberTest extends TestCase
             'nama_dokter' => $namaDokter,
             'kode_poliklinik' => '01',
             'is_active' => true,
+        ]);
+    }
+
+    /**
+     * seedDoctor() sendiri TIDAK membuat DoctorSchedule - cukup untuk test
+     * queue-number yang memanipulasi Booking langsung (lihat makeBooking()).
+     * Test createBooking()/promoteWaitlist()/moveBookingToShift() di bawah
+     * BENAR-BENAR memanggil AntreanService, yang punya gate $jadwalValid
+     * sendiri (lihat AntreanService::createBooking()) - WAJIB ada baris
+     * DoctorSchedule (source='manual') + QuotaShift nyata dulu.
+     */
+    protected function seedDoctorWithSchedule(string $kodeDokter = 'D01', string $namaDokter = 'dr. Rina Puspita', ?string $tanggal = null): Doctor
+    {
+        $doctor = $this->seedDoctor($kodeDokter, $namaDokter);
+        $tanggal ??= now()->toDateString();
+
+        $hariMap = [
+            'Monday' => 'SENIN', 'Tuesday' => 'SELASA', 'Wednesday' => 'RABU',
+            'Thursday' => 'KAMIS', 'Friday' => 'JUMAT', 'Saturday' => 'SABTU', 'Sunday' => 'MINGGU',
+        ];
+
+        DoctorSchedule::create([
+            'kode_dokter' => $kodeDokter,
+            'kode_poliklinik' => '01',
+            'hari' => $hariMap[Carbon::parse($tanggal)->format('l')],
+            'jam_mulai' => '08:00',
+            'jam_selesai' => '12:00',
+            'shift' => 'pagi',
+            'kuota_total' => 5,
+            'source' => 'manual',
+        ]);
+
+        QuotaShift::create([
+            'kode_dokter' => $kodeDokter,
+            'kode_poliklinik' => '01',
+            'tanggal' => $tanggal,
+            'shift' => 'pagi',
+            'kuota_total' => 5,
+            'kuota_terpakai' => 0,
+        ]);
+
+        return $doctor;
+    }
+
+    protected function seedChatSessionWithPatient(string $noRm = '000501'): ChatSession
+    {
+        Patient::create([
+            'no_rm' => $noRm,
+            'nama' => 'Budi',
+            'jk' => 'LAKI-LAKI',
+            'tanggal_lahir' => '2021-01-01',
+            'nama_ibu_kandung' => 'Sari',
+            'no_hp' => '081234567890',
+            'last_synced_at' => now(),
+        ]);
+
+        return ChatSession::create([
+            'chat_id' => '6281234567890@c.us',
+            'state' => 'STATE_1_PENGUMPULAN_DATA',
+            'no_rm' => $noRm,
         ]);
     }
 
@@ -367,5 +433,184 @@ class AntreanQueueNumberTest extends TestCase
         // servingNow sendiri (dia yang sedang dilayani) - sisa harus 0.
         $servingMessage = $antrean->buildQueueStatusMessage($servingNow->fresh(), false);
         $this->assertStringContainsString('Giliran Anda sekarang', $servingMessage);
+    }
+
+    protected function fakeGtkBookingEndpoints(): void
+    {
+        Http::fake([
+            '*url=auth*' => Http::response(['response' => ['token' => 'test-token'], 'metadata' => ['message' => 'Ok', 'code' => 200]], 200),
+            '*url=regpasien*' => Http::response(['response' => ['no_rawat' => '2026/08/17/'.random_int(1000, 9999), 'no_reg' => '1'], 'metadata' => ['message' => 'Ok', 'code' => 200]], 200),
+            '*url=batalkunjungan*' => Http::response(['response' => [], 'metadata' => ['message' => 'Ok', 'code' => 200]], 200),
+        ]);
+    }
+
+    /**
+     * kunjungan_reminder TIDAK lagi disinkron dari GTK (lihat routes/
+     * console.php & KunjunganReminderService) - sebagai gantinya,
+     * createBooking() WAJIB memanggil upsertForBooking() begitu booking
+     * benar-benar dapat no_rawat (status Booked), TIDAK untuk booking yang
+     * jatuh ke waitlist (belum ada no_rawat/kepastian jadwal).
+     */
+    public function test_create_booking_upserts_reminder_only_when_booked_not_waitlisted(): void
+    {
+        $this->seedDoctorWithSchedule();
+        $session = $this->seedChatSessionWithPatient();
+        $this->fakeGtkBookingEndpoints();
+
+        $this->mock(KunjunganReminderService::class, function ($mock) {
+            $mock->shouldReceive('upsertForBooking')
+                ->once()
+                ->withArgs(fn (Booking $b) => $b->status === BookingStatus::Booked && filled($b->no_rawat));
+        });
+
+        $booking = app(AntreanService::class)->createBooking($session, [
+            'no_rm' => '000501',
+            'kode_poliklinik' => '01',
+            'kode_dokter' => 'D01',
+            'tanggal_periksa' => now()->toDateString(),
+            'shift' => Shift::Pagi,
+            'jenis_layanan' => JenisLayanan::Pemeriksaan,
+        ]);
+
+        $this->assertSame(BookingStatus::Booked, $booking->status);
+    }
+
+    public function test_create_booking_does_not_upsert_reminder_when_waitlisted(): void
+    {
+        $doctor = $this->seedDoctorWithSchedule();
+        $session = $this->seedChatSessionWithPatient();
+        $this->fakeGtkBookingEndpoints();
+
+        // Kuota penuh - reserveSlot() gagal dipenuhi hasAvailability() jadi
+        // booking ini WAJIB jatuh ke waitlist, bukan Booked.
+        QuotaShift::where('kode_dokter', $doctor->kode_dokter)->update(['kuota_terpakai' => 5]);
+
+        $this->mock(KunjunganReminderService::class, function ($mock) {
+            $mock->shouldNotReceive('upsertForBooking');
+        });
+
+        $booking = app(AntreanService::class)->createBooking($session, [
+            'no_rm' => '000501',
+            'kode_poliklinik' => '01',
+            'kode_dokter' => 'D01',
+            'tanggal_periksa' => now()->toDateString(),
+            'shift' => Shift::Pagi,
+            'jenis_layanan' => JenisLayanan::Pemeriksaan,
+        ]);
+
+        $this->assertSame(BookingStatus::Waitlist, $booking->status);
+    }
+
+    /**
+     * promoteWaitlist() memindahkan booking waitlist ke Booked (dapat
+     * no_rawat) - titik ini WAJIB juga memicu upsertForBooking(), persis
+     * seperti createBooking() untuk booking yang langsung Booked.
+     */
+    public function test_promote_waitlist_upserts_reminder_for_promoted_booking(): void
+    {
+        $this->seedDoctorWithSchedule();
+        $this->fakeGtkBookingEndpoints();
+
+        $waitlisted = $this->makeBooking([
+            'status' => BookingStatus::Waitlist->value,
+            'waitlist_position' => 1,
+        ]);
+
+        $this->mock(KunjunganReminderService::class, function ($mock) use ($waitlisted) {
+            $mock->shouldReceive('upsertForBooking')
+                ->once()
+                ->withArgs(fn (Booking $b) => $b->id === $waitlisted->id);
+        });
+
+        app(AntreanService::class)->promoteWaitlist(
+            'D01', now()->toDateString(), Shift::Pagi, JenisLayanan::Pemeriksaan, 1,
+        );
+
+        $this->assertSame(BookingStatus::Booked, $waitlisted->fresh()->status);
+    }
+
+    /**
+     * cancelBooking()/markNoShow() WAJIB memanggil cancelForBooking() -
+     * tanpa sync GTK lagi, ini satu-satunya cara kunjungan_reminder tahu
+     * kunjungannya sudah tidak berlaku (lihat keputusan produk di plan).
+     */
+    public function test_cancel_booking_cancels_reminder(): void
+    {
+        $this->seedDoctorWithSchedule();
+        $this->fakeGtkBookingEndpoints();
+
+        $booking = $this->makeBooking(['no_rawat' => '2026/08/17/0001']);
+
+        $this->mock(KunjunganReminderService::class, function ($mock) use ($booking) {
+            $mock->shouldReceive('cancelForBooking')
+                ->once()
+                ->withArgs(fn (Booking $b) => $b->id === $booking->id);
+        });
+
+        app(AntreanService::class)->cancelBooking($booking);
+    }
+
+    public function test_mark_no_show_cancels_reminder(): void
+    {
+        $this->seedDoctorWithSchedule();
+        $this->fakeGtkBookingEndpoints();
+
+        $booking = $this->makeBooking(['no_rawat' => '2026/08/17/0002']);
+
+        $this->mock(KunjunganReminderService::class, function ($mock) use ($booking) {
+            $mock->shouldReceive('cancelForBooking')
+                ->once()
+                ->withArgs(fn (Booking $b) => $b->id === $booking->id);
+        });
+
+        app(AntreanService::class)->markNoShow($booking);
+    }
+
+    /**
+     * cancelShiftAndReschedule() -> moveBookingToShift() memindahkan
+     * booking ke shift lain (no_rawat BARU) - kunjungan LAMA harus
+     * dibatalkan reminder-nya, kunjungan BARU harus dapat reminder baru
+     * (dengan jam_mulai shift baru, bukan shift lama).
+     */
+    public function test_reschedule_cancels_old_reminder_and_creates_new_one(): void
+    {
+        $doctor = $this->seedDoctorWithSchedule();
+
+        $hariMap = [
+            'Monday' => 'SENIN', 'Tuesday' => 'SELASA', 'Wednesday' => 'RABU',
+            'Thursday' => 'KAMIS', 'Friday' => 'JUMAT', 'Saturday' => 'SABTU', 'Sunday' => 'MINGGU',
+        ];
+
+        // Shift sore juga perlu jadwal supaya ada tujuan pindah.
+        DoctorSchedule::create([
+            'kode_dokter' => $doctor->kode_dokter,
+            'kode_poliklinik' => '01',
+            'hari' => $hariMap[now()->format('l')],
+            'jam_mulai' => '15:30',
+            'jam_selesai' => '17:00',
+            'shift' => 'sore',
+            'kuota_total' => 5,
+            'source' => 'manual',
+        ]);
+
+        $this->fakeGtkBookingEndpoints();
+
+        $original = $this->makeBooking([
+            'no_rawat' => '2026/08/17/0003',
+            'status' => BookingStatus::Booked->value,
+        ]);
+
+        $this->mock(KunjunganReminderService::class, function ($mock) use ($original) {
+            $mock->shouldReceive('cancelForBooking')
+                ->once()
+                ->withArgs(fn (Booking $b) => $b->id === $original->id);
+            $mock->shouldReceive('upsertForBooking')
+                ->once()
+                ->withArgs(fn (Booking $b) => $b->id !== $original->id && $b->shift === Shift::Sore);
+        });
+
+        app(AntreanService::class)->cancelShiftAndReschedule('D01', now()->toDateString(), Shift::Pagi);
+
+        $this->assertSame(BookingStatus::Rescheduled, $original->fresh()->status);
     }
 }
