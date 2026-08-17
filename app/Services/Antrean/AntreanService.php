@@ -236,6 +236,17 @@ class AntreanService
      * dilayani DAN SEBELUM giliran pasien ini (tidak termasuk yang sedang
      * dilayani itu sendiri) - mis. sedang dilayani #3, pasien ini #5,
      * sisa = 5 - 3 - 1 = 1 (cuma #4 yang perlu selesai dulu).
+     *
+     * "Giliran Anda sekarang" HANYA muncul kalau pasien ini SENDIRI yang
+     * sedang dilayani (no_antrean === currentlyServing) - kejadian nyata
+     * yang jadi bug: dulu dipicu oleh "sisa <= 0", tapi itu JUGA true
+     * untuk pasien yang cuma "berikutnya" (no_antrean === currentlyServing
+     * + 1, sisa 0 orang DI ANTARA keduanya) padahal pasien yang sedang
+     * dilayani BELUM tentu sudah selesai - pasien nomor 2 sempat dapat
+     * "Giliran Anda sekarang!" padahal nomor 1 masih Arrived (belum Selesai
+     * sama sekali). Sekarang dipisah tiga tingkat: sedang dilayani sendiri,
+     * berikutnya (0 orang di antara, tapi yang di depan belum tentu
+     * selesai), dan masih ada N orang lagi.
      */
     public function buildQueueStatusMessage(Booking $booking, bool $isArrivalConfirmation): string
     {
@@ -252,8 +263,6 @@ class AntreanService
         // saja pasien ini yang sedang dilayani (giliran Anda sekarang).
         $currentlyServing ??= $booking->no_antrean;
 
-        $sisa = max(0, $booking->no_antrean - $currentlyServing - 1);
-
         $nama = $booking->patient?->nama ?? 'Ayah/Bunda';
         $dokter = $booking->doctor?->nama_dokter ?? 'dokter';
 
@@ -261,12 +270,23 @@ class AntreanService
             ? "Halo Ayah/Bunda! 👋\nAdik *{$nama}* sudah tercatat *hadir* di Graha Tumbuh Kembang Anak Jombang."
             : "Halo Ayah/Bunda! 👋\nInfo antrean untuk Adik *{$nama}* sudah diperbarui.";
 
-        if ($sisa <= 0) {
+        if ($booking->no_antrean <= $currentlyServing) {
             return "{$pembuka}\n\n"
                 ."🔔 *Giliran Anda sekarang!*\n"
                 ."🎫 Nomor Antrean: *{$booking->no_antrean}*\n"
                 ."Silakan menuju ruang periksa {$dokter} ya.\n\n"
                 .'Terima kasih 😊';
+        }
+
+        $sisa = $booking->no_antrean - $currentlyServing - 1;
+
+        if ($sisa <= 0) {
+            return "{$pembuka}\n\n"
+                ."⏭️ *Anda antrean berikutnya!*\n"
+                ."🎫 Nomor Antrean Anda: *{$booking->no_antrean}*\n"
+                ."👉 Sedang Dilayani: Nomor *{$currentlyServing}*\n"
+                ."Mohon bersiap, sebentar lagi giliran Anda ya.\n\n"
+                .'Terima kasih atas kesabarannya 🙏';
         }
 
         return "{$pembuka}\n\n"

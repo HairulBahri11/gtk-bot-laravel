@@ -317,6 +317,11 @@ class AntreanQueueNumberTest extends TestCase
      * dilayani #3, pasien ini #5, sisa = 1 (cuma #4 yang harus selesai
      * dulu). Juga cek kasus pasien sendiri yang sedang dilayani (sisa=0,
      * "giliran Anda sekarang") dan kasus sendirian di antrean (fallback).
+     *
+     * Regresi bug nyata dari testing WA: pasien nomor 2 sempat dapat
+     * "Giliran Anda sekarang!" padahal nomor 1 masih Arrived (BELUM
+     * ditandai Selesai sama sekali) - lihat kasus $middle di bawah, WAJIB
+     * dapat pesan "Anda antrean berikutnya", BUKAN "Giliran Anda sekarang".
      */
     public function test_build_queue_status_message_arithmetic(): void
     {
@@ -340,6 +345,15 @@ class AntreanQueueNumberTest extends TestCase
 
         $middle = $this->makeBooking(['kode_dokter' => 'D02']); // #2
         $antrean->confirmArrival($middle);
+
+        // Bug nyata: nomor 1 (servingNow) BELUM Selesai sama sekali di
+        // titik ini - nomor 2 (middle) HANYA boleh dianggap "berikutnya",
+        // BUKAN "giliran sekarang" (dulu keliru karena formula lama cuma
+        // cek "sisa <= 0", padahal sisa=0 juga true untuk kasus ini).
+        $middleMessage = $antrean->buildQueueStatusMessage($middle->fresh(), true);
+        $this->assertStringNotContainsString('Giliran Anda sekarang', $middleMessage);
+        $this->assertStringContainsString('Anda antrean berikutnya', $middleMessage);
+        $this->assertStringContainsString('Sedang Dilayani: Nomor *1*', $middleMessage);
 
         $targetPatient = $this->makeBooking(['kode_dokter' => 'D02']); // #3
         $antrean->confirmArrival($targetPatient);
