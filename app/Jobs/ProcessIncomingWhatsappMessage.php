@@ -314,18 +314,18 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
                     default => '',
                 };
 
-                $lines[] = "{$dayLabel} shift {$shiftText} pukul {$jam}{$statusText}, di {$schedule->poliklinik?->nama_poliklinik}";
+                $lines[] = "{$dayLabel} shift {$shiftText} pukul *{$jam}*{$statusText}, di {$schedule->poliklinik?->nama_poliklinik}";
             }
         }
 
         if (empty($lines)) {
             $periode = count($targetDates) > 1 ? 'hari ini maupun besok' : 'tanggal yang ditanyakan';
 
-            return "Mohon maaf, {$doctor->nama_dokter} tidak memiliki jadwal praktik untuk {$periode}. "
+            return "Mohon maaf, *{$doctor->nama_dokter}* tidak memiliki jadwal praktik untuk {$periode}. "
                 .'Silakan tanyakan tanggal lain atau hubungi kami untuk info lebih lanjut.';
         }
 
-        return "Jadwal praktik {$doctor->nama_dokter}: ".implode('; ', $lines).'.';
+        return "Jadwal praktik *{$doctor->nama_dokter}*: ".implode('; ', $lines).'.';
     }
 
     /**
@@ -384,14 +384,14 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
                         default => '',
                     };
 
-                    return "{$shiftText} {$jam}{$statusText}";
+                    return "{$shiftText} *{$jam}*{$statusText}";
                 })->implode(', ');
 
-                return "- {$namaDokter} ({$namaPoli}): {$shiftParts}";
+                return "- *{$namaDokter}* ({$namaPoli}): {$shiftParts}";
             })->values();
 
             $dayLabel = $this->relativeDayLabel($date);
-            $sections[] = "Jadwal dokter {$dayLabel} ({$date->translatedFormat('d F Y')}):\n".$doctorLines->implode("\n");
+            $sections[] = "Jadwal dokter {$dayLabel} (*{$date->translatedFormat('d F Y')}*):\n".$doctorLines->implode("\n");
         }
 
         if (empty($sections)) {
@@ -882,7 +882,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             : 'tidak diketahui';
 
         return "Mohon konfirmasi, apakah data pasien yang dimaksud adalah *{$candidate['nama']}* "
-            ."(lahir {$tanggalLabel})? Kami menemukan kecocokan berdasarkan tanggal lahir yang sama. "
+            ."(lahir *{$tanggalLabel}*)? Kami menemukan kecocokan berdasarkan tanggal lahir yang sama. "
             .'Balas "Ya" jika benar, atau beri tahu kami nama lengkap dan tanggal lahir yang benar kalau belum sesuai.';
     }
 
@@ -1184,7 +1184,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
             $dokterInput = is_string($context['dokter_pilihan'] ?? null) ? trim($context['dokter_pilihan']) : '';
             $namaDokterTersedia = fn () => $schedulesForDate
-                ->map(fn (DoctorSchedule $s) => $s->doctor?->nama_dokter ?? $s->kode_dokter)
+                ->map(fn (DoctorSchedule $s) => '*'.($s->doctor?->nama_dokter ?? $s->kode_dokter).'*')
                 ->unique()
                 ->implode(', ');
 
@@ -1212,8 +1212,8 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
                 // ini dievaluasi ulang dari awal (pola yang sama dengan
                 // resolvePatient() dievaluasi ulang tiap giliran).
                 $daftarDokter = $schedulesForDate
-                    ->map(fn (DoctorSchedule $s) => ($s->doctor?->nama_dokter ?? $s->kode_dokter)
-                        .' (pukul '.$this->formatJamRange($s->jam_mulai, $s->jam_selesai).')')
+                    ->map(fn (DoctorSchedule $s) => '*'.($s->doctor?->nama_dokter ?? $s->kode_dokter).'*'
+                        .' (pukul *'.$this->formatJamRange($s->jam_mulai, $s->jam_selesai).'*)')
                     ->unique()
                     ->implode(', ');
 
@@ -1269,7 +1269,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
                 $jamLabel = $this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai']);
 
                 return "Untuk poliklinik {$poli->nama_poliklinik}, jadwal yang tersedia adalah "
-                    ."{$tanggalLabel} shift {$shift->label()} pukul {$jamLabel}. Apakah Bunda/Ayah setuju dengan jadwal ini? "
+                    ."*{$tanggalLabel}* shift {$shift->label()} pukul *{$jamLabel}*. Apakah Bunda/Ayah setuju dengan jadwal ini? "
                     .'Balas "Ya" untuk konfirmasi, atau beri tahu kami kalau ingin tanggal/shift lain.';
             }
 
@@ -1295,9 +1295,9 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             // kategori supaya "posisi #1" tidak terbaca aneh kalau pasien
             // lain kategori berbeda kebetulan juga "posisi #1" di shift yang
             // sama persis.
-            $pesan = "Kuota {$jenis->label()} shift {$shift->label()} (pukul {$this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai'])}) "
-                ."pada {$slot['tanggal']} sudah penuh. Anda dimasukkan ke daftar tunggu "
-                ."{$jenis->label()} (posisi #{$booking->waitlist_position}). Kami akan menghubungi Anda jika ada slot tersedia.";
+            $pesan = "Kuota {$jenis->label()} shift {$shift->label()} (pukul *{$this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai'])}*) "
+                ."pada *{$slot['tanggal']}* sudah penuh. Anda dimasukkan ke daftar tunggu "
+                ."{$jenis->label()} (posisi *#{$booking->waitlist_position}*). Kami akan menghubungi Anda jika ada slot tersedia.";
 
             // §3.2 PRD: tawarkan jadwal dokter yang sama di tanggal/shift lain
             // yang kuotanya masih tersedia, supaya user tidak cuma pasrah
@@ -1322,9 +1322,9 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         $jamLabel = $this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai']);
 
         return "Terima kasih Ayah/Bunda.\n"
-            ."Adik {$context['nama']} telah terdaftar di jadwal {$jenis->label()} {$namaDokter} pada {$tanggalLabel}, pukul {$jamLabel}.\n\n"
-            .'Untuk nomor antrean akan disesuaikan dengan kedatangan di Graha Tumbuh Kembang.'
-            ."\n\nGraha Tumbuh Kembang\n"
+            ."Adik *{$context['nama']}* telah terdaftar di jadwal {$jenis->label()} *{$namaDokter}* pada *{$tanggalLabel}*, pukul *{$jamLabel}*.\n\n"
+            .'Untuk nomor antrean akan disesuaikan dengan kedatangan di *Graha Tumbuh Kembang*.'
+            ."\n\n*Graha Tumbuh Kembang*\n"
             .'Solusi Kesehatan & Tumbuh Kembang Anak';
     }
 
@@ -1632,7 +1632,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
             $nama = $context['nama'] ?? 'ananda';
 
-            return "Baik, akan kami bantu proses pendaftaran kunjungan baru untuk {$nama}.";
+            return "Baik, akan kami bantu proses pendaftaran kunjungan baru untuk *{$nama}*.";
         }
 
         return $result['reply'];

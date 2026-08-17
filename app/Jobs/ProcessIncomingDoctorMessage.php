@@ -76,7 +76,7 @@ class ProcessIncomingDoctorMessage implements ShouldQueue
         }
 
         if (! $this->doctorHasSchedule($command['shift'], $command['tanggal'])) {
-            $this->reply($wa, "Anda tidak memiliki jadwal shift {$command['shift']->label()} pada tanggal {$command['tanggal']}.");
+            $this->reply($wa, "Anda tidak memiliki jadwal shift *{$command['shift']->label()}* pada tanggal *{$command['tanggal']}*.");
 
             return;
         }
@@ -95,7 +95,7 @@ class ProcessIncomingDoctorMessage implements ShouldQueue
         if ($command['action'] === 'cancel') {
             $antrean->cancelShiftAndReschedule($this->kodeDokter, $command['tanggal'], $shift, 'Dibatalkan dokter via WhatsApp');
 
-            $this->reply($wa, "Baik, shift {$shift->label()} tanggal {$command['tanggal']} sudah dibatalkan. "
+            $this->reply($wa, "Baik, shift *{$shift->label()}* tanggal *{$command['tanggal']}* sudah dibatalkan. "
                 .'Pasien terdampak akan otomatis diberi tahu/dijadwalkan ulang.');
 
             return;
@@ -103,7 +103,7 @@ class ProcessIncomingDoctorMessage implements ShouldQueue
 
         $antrean->delayShiftAndNotify($this->kodeDokter, $command['tanggal'], $shift, (int) $command['delay_minutes'], 'Delay dilaporkan dokter via WhatsApp');
 
-        $this->reply($wa, "Baik, shift {$shift->label()} tanggal {$command['tanggal']} dicatat delay {$command['delay_minutes']} menit. "
+        $this->reply($wa, "Baik, shift *{$shift->label()}* tanggal *{$command['tanggal']}* dicatat delay *{$command['delay_minutes']} menit*. "
             .'Pasien terdampak akan otomatis diberi tahu.');
     }
 
@@ -115,11 +115,11 @@ class ProcessIncomingDoctorMessage implements ShouldQueue
         $shift = $command['shift'];
 
         if ($command['action'] === 'cancel') {
-            return "Konfirmasi: batalkan shift {$shift->label()} tanggal {$command['tanggal']}? "
+            return "Konfirmasi: batalkan shift *{$shift->label()}* tanggal *{$command['tanggal']}*? "
                 .'Pasien yang sudah booking akan otomatis digeser ke shift berikutnya/diberi tahu. Balas "Ya" untuk konfirmasi.';
         }
 
-        return "Konfirmasi: shift {$shift->label()} tanggal {$command['tanggal']} delay {$command['delay_minutes']} menit? "
+        return "Konfirmasi: shift *{$shift->label()}* tanggal *{$command['tanggal']}* delay *{$command['delay_minutes']} menit*? "
             .'Pasien terdampak akan diberi tahu. Balas "Ya" untuk konfirmasi.';
     }
 

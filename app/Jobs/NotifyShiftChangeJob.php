@@ -82,9 +82,9 @@ class NotifyShiftChangeJob implements ShouldQueue
     protected function rescheduledMessage(Booking $booking, string $nama, string $poli, string $dokter, string $tanggal, string $tanggalLabel): string
     {
         $jam = $this->jamRange($booking->kode_dokter, $tanggal, $booking->shift);
-        $jamLabel = $jam ? " pukul {$jam}" : '';
+        $jamLabel = $jam ? " pukul *{$jam}*" : '';
 
-        return "Mohon maaf, jadwal kunjungan {$nama} ke {$poli} ({$dokter}) pada {$tanggalLabel} "
+        return "Mohon maaf, jadwal kunjungan *{$nama}* ke {$poli} (*{$dokter}*) pada *{$tanggalLabel}* "
             ."dipindahkan ke shift {$booking->shift->label()}{$jamLabel} karena ada perubahan jadwal dokter. "
             .'Kami akan mengirim pengingat seperti biasa mendekati waktu kunjungan.';
     }
@@ -93,10 +93,10 @@ class NotifyShiftChangeJob implements ShouldQueue
     {
         $delayMinutes = (int) ($this->payload['delay_minutes'] ?? 0);
         $jam = $this->jamRange($booking->kode_dokter, $tanggal, $booking->shift);
-        $efektif = $jam ? " Perkiraan jam praktik mundur {$delayMinutes} menit dari jadwal semula ({$jam})." : '';
+        $efektif = $jam ? " Perkiraan jam praktik mundur *{$delayMinutes} menit* dari jadwal semula (*{$jam}*)." : '';
 
-        return "Info: jadwal kunjungan {$nama} ke {$poli} ({$dokter}) pada {$tanggalLabel} shift {$booking->shift->label()} "
-            ."mengalami keterlambatan sekitar {$delayMinutes} menit.{$efektif} Mohon maaf atas ketidaknyamanannya.";
+        return "Info: jadwal kunjungan *{$nama}* ke {$poli} (*{$dokter}*) pada *{$tanggalLabel}* shift {$booking->shift->label()} "
+            ."mengalami keterlambatan sekitar *{$delayMinutes} menit*.{$efektif} Mohon maaf atas ketidaknyamanannya.";
     }
 
     protected function cancelledNoAlternativeMessage(string $nama, string $poli, string $dokter, string $tanggalLabel): string
@@ -109,7 +109,7 @@ class NotifyShiftChangeJob implements ShouldQueue
             ? " Jadwal alternatif yang masih tersedia: {$alternatif}. Balas pesan ini kalau ingin pindah ke salah satunya."
             : ' Mohon hubungi kami untuk menjadwalkan ulang kunjungan Anda.';
 
-        return "Mohon maaf, jadwal kunjungan {$nama} ke {$poli} ({$dokter}) pada {$tanggalLabel} dibatalkan oleh dokter "
+        return "Mohon maaf, jadwal kunjungan *{$nama}* ke {$poli} (*{$dokter}*) pada *{$tanggalLabel}* dibatalkan oleh dokter "
             .'dan tidak ada shift lain yang tersedia di hari yang sama.'.$saran;
     }
 

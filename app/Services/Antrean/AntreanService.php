@@ -281,14 +281,14 @@ class AntreanService
         $dokter = $booking->doctor?->nama_dokter ?? 'dokter';
 
         $pembuka = $isArrivalConfirmation
-            ? "Halo Ayah/Bunda! 👋\nAdik *{$nama}* sudah tercatat *hadir* di Graha Tumbuh Kembang Anak Jombang."
+            ? "Halo Ayah/Bunda! 👋\nAdik *{$nama}* sudah tercatat *hadir* di *Graha Tumbuh Kembang Anak Jombang*."
             : "Halo Ayah/Bunda! 👋\nInfo antrean untuk Adik *{$nama}* sudah diperbarui.";
 
         if ($booking->no_antrean <= $currentlyServing) {
             return "{$pembuka}\n\n"
                 ."🔔 *Giliran Anda sekarang!*\n"
                 ."🎫 Nomor Antrean: *{$booking->no_antrean}*\n"
-                ."Silakan menuju ruang periksa {$dokter} ya.\n\n"
+                ."Silakan menuju ruang periksa *{$dokter}* ya.\n\n"
                 .'Terima kasih 😊';
         }
 

@@ -175,9 +175,9 @@ class DispatchKunjunganReminder extends Command
         $untukLayanan = $jenisLayanan ? " untuk {$jenisLayanan}" : '';
 
         return "Selamat {$this->sapaanWaktu()},\n"
-            .'Kami dari Graha Tumbuh Kembang Anak Jombang ingin mengingatkan jadwal kunjungan '
-            ."{$row->nama_pasien}{$untukLayanan} di {$poli} bersama {$dokter} yang akan berlangsung "
-            ."{$label} pukul {$jam} WIB.\n\n"
+            .'Kami dari *Graha Tumbuh Kembang Anak Jombang* ingin mengingatkan jadwal kunjungan '
+            ."*{$row->nama_pasien}*{$untukLayanan} di {$poli} bersama *{$dokter}* yang akan berlangsung "
+            ."{$label} pukul *{$jam}* WIB.\n\n"
             .'Mohon bantuannya untuk mengonfirmasi kehadiran ya. Terima kasih banyak! 😊🙏';
     }
 
