@@ -113,12 +113,14 @@ class WhatsappWebhookTest extends TestCase
         $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
 
         Http::fake([
-            'openrouter.ai/*' => Http::sequence()
-                // Tanggal spesifik yang diminta sekarang bagian dari formulir
-                // STATE_1 itu sendiri (jadwal kunjungan) - bukan lagi
-                // override di STATE_2 seperti dulu.
-                ->push($this->openRouterResponse($this->stateOneAiContent(['tanggal_kunjungan' => $requestedDate])), 200)
-                ->push($this->openRouterResponse($this->confirmationAiContent()), 200),
+            // Tanggal spesifik yang diminta sekarang bagian dari formulir
+            // STATE_1 itu sendiri (jadwal kunjungan) - bukan lagi override di
+            // STATE_2 seperti dulu. Karena diminta EKSPLISIT (bukan
+            // "secepatnya"), resolveSlotAndReply() langsung booking di
+            // giliran ini juga, TANPA giliran konfirmasi slot terpisah lagi
+            // (lihat komentar slot_ditawarkan di resolveSlotAndReply()) -
+            // jadi cukup satu respons OpenRouter, satu giliran webhook.
+            'openrouter.ai/*' => Http::response($this->openRouterResponse($this->stateOneAiContent(['tanggal_kunjungan' => $requestedDate])), 200),
             '*url=auth*' => Http::response($this->gtkOk(['token' => 'test-token']), 200),
             '*url=caripasien*' => Http::response($this->gtkFail('Data tidak ditemukan', 404), 200),
             '*url=tambahpasien*' => Http::response($this->gtkOk(['no_rkm_medis' => '000099'], 'Pasien baru berhasil didaftarkan'), 200),
@@ -126,23 +128,15 @@ class WhatsappWebhookTest extends TestCase
         ]);
 
         // Giliran 1: formulir lengkap dengan tanggal spesifik -> slot untuk
-        // tanggal itu langsung ditawarkan.
+        // tanggal itu langsung dicari & booking langsung dibuat (tidak perlu
+        // giliran konfirmasi lagi karena tanggalnya sendiri sudah eksplisit
+        // dari pasien).
         $this->postJson('/api/whatsapp/webhook', [
             'event' => 'message',
             'payload' => [
                 'from' => $this->chatId,
                 'fromMe' => false,
                 'body' => 'Anak saya Budi, lahir 2021-01-01, ibu Sari, keluhan demam, laki-laki',
-            ],
-        ])->assertOk();
-
-        // Giliran 2: konfirmasi slot yang ditawarkan.
-        $this->postJson('/api/whatsapp/webhook', [
-            'event' => 'message',
-            'payload' => [
-                'from' => $this->chatId,
-                'fromMe' => false,
-                'body' => 'Ya, setuju',
             ],
         ])->assertOk();
 

@@ -553,14 +553,14 @@ class AiEngineService
                     meminta persetujuan - lihat STATE_1), null kalau
                     poli_pilihan juga belum ada>,
                   "jenis_layanan": "<pemeriksaan|konsultasi_gizi|
-                    konsultasi_tumbuh_kembang atau null - WAJIB hasil
-                    jawaban EKSPLISIT user terhadap pertanyaan kategori
-                    (lihat STATE_1), JANGAN PERNAH ditebak/disimpulkan
-                    sendiri dari keluhan atau poli_pilihan>",
-                  "jenis_layanan_dijawab": <true HANYA jika pertanyaan jenis
-                    layanan sudah benar-benar diajukan DAN dijawab user
-                    dengan salah satu pilihan yang valid, false/null kalau
-                    belum pernah ditanyakan atau belum dijawab>,
+                    konsultasi_tumbuh_kembang atau null - diisi OTOMATIS
+                    begitu keluhan diklasifikasikan ke salah satu kategori
+                    BAGIAN A (lihat STATE_1 langkah 2 & PENTING soal
+                    jenis_layanan), BUKAN hasil jawaban user terhadap
+                    pertanyaan terpisah>",
+                  "jenis_layanan_dijawab": <true begitu jenis_layanan diisi
+                    otomatis di langkah klasifikasi (lihat STATE_1), false/
+                    null kalau keluhan belum diklasifikasikan>,
                   "shift_pilihan": "<pagi|sore|malam atau null>",
                   "tanggal_kunjungan": "<WAJIB diisi salah satu dari dua
                     kemungkinan ini begitu tanggal_kunjungan_dijawab = true
@@ -668,9 +668,16 @@ class AiEngineService
                  tawaran/pertanyaan. Set extracted.poli_disetujui = true
                  pada giliran yang SAMA ini juga (SEKALI true, JANGAN
                  PERNAH set balik ke false/null pada giliran-giliran
-                 berikutnya), lalu lanjutkan ke pengisian data pendaftaran
-                 (lihat format dua pesan & PENTING soal jenis_layanan di
-                 bawah).
+                 berikutnya). PADA GILIRAN YANG SAMA INI JUGA, isi
+                 extracted.jenis_layanan dengan kategori BAGIAN A yang
+                 cocok ("pemeriksaan"/"konsultasi_gizi"/
+                 "konsultasi_tumbuh_kembang" - ATURAN SAKIT vs SEHAT di
+                 bawah sudah menentukan kategori yang benar) DAN set
+                 extracted.jenis_layanan_dijawab = true - TIDAK PERLU
+                 menunggu/menanyakan apapun ke orang tua untuk field ini
+                 (lihat "PENTING soal jenis_layanan" di bawah untuk
+                 detail), lalu lanjutkan ke pengisian data pendaftaran
+                 (lihat format dua pesan di bawah).
                - Kalau cocok ke salah satu poliklinik di BAGIAN B (di luar
                  cakupan untuk saat ini), JANGAN isi
                  poli_pilihan/poli_disetujui/keluhan sama sekali, dan JANGAN
@@ -692,19 +699,31 @@ class AiEngineService
                keduanya - lihat aturan umum di ATURAN WAJIB):
                - Pesan pertama: tunjukkan empati singkat atas kondisi yang
                  diceritakan, LALU informasikan poliklinik tujuannya
-                 ("Poli Spesialis Anak", dengan bahasamu sendiri) sebagai
-                 KEPASTIAN, LANGSUNG DISUSUL (paragraf/baris terpisah,
-                 pesan yang SAMA) jadwal praktik dokternya - pakai PERSIS
-                 data berikut, JANGAN mengarang jam/hari di luar ini:
+                 ("Poli Spesialis Anak", dengan bahasamu sendiri) DAN
+                 kategori layanan yang baru saja ditentukan (Periksa Sakit/
+                 Imunisasi, Konsultasi Gizi, atau Konsultasi Tumbuh Kembang
+                 - lihat langkah 2 & "PENTING soal jenis_layanan" di bawah)
+                 sebagai KEPASTIAN dalam kalimat yang sama, LANGSUNG DISUSUL
+                 (paragraf/baris terpisah, pesan yang SAMA) jadwal praktik
+                 dokternya - pakai PERSIS data berikut, JANGAN mengarang
+                 jam/hari di luar ini:
 
                  {$weeklySchedule}
 
-                 Format jadwal ini bebas asal jelas per dokter (nama dokter,
-                 hari praktik, sesi & jam) - boleh dirangkai ulang dengan
-                 bahasamu sendiri asal ANGKA & HARINYA PERSIS sama dengan
-                 data di atas, JANGAN diringkas/dihilangkan sebagian.
-                 JANGAN sertakan permintaan data pendaftaran apapun di pesan
-                 ini - cukup empati + arahan poliklinik + jadwal saja (boleh
+                 Data di atas BISA berisi LEBIH DARI SATU dokter (dipisah
+                 baris "- nama dokter") - WAJIB tampilkan SEMUA dokter yang
+                 tercantum, JANGAN memilih hanya salah satu/yang menurutmu
+                 paling relevan/paling awal saja. Format jadwal ini bebas
+                 asal jelas per dokter (nama dokter, hari praktik, sesi &
+                 jam) - boleh dirangkai ulang dengan bahasamu sendiri asal
+                 ANGKA & HARINYA PERSIS sama dengan data di atas, JANGAN
+                 diringkas/dihilangkan sebagian ATAUPUN dihilangkan salah
+                 satu dokternya. Supaya rapi kalau lebih dari satu dokter,
+                 pisahkan tiap dokter dengan baris kosong, awali tiap blok
+                 dengan nama dokter tsb sebagai judul singkat, baru diikuti
+                 daftar hari & jamnya per baris. JANGAN sertakan permintaan
+                 data pendaftaran apapun di pesan ini - cukup empati +
+                 arahan poliklinik + kategori layanan + jadwal saja (boleh
                  lebih panjang dari pesan-pesan lain karena memuat jadwal,
                  tapi tetap tanpa basa-basi tambahan di luar itu).
                - Pesan kedua: kalimat pembuka bahwa data pendaftaran perlu
@@ -718,9 +737,11 @@ class AiEngineService
                  "PENTING soal tempat & tanggal lahir" di bawah), Nama ibu
                  kandung, Jenis kelamin, Nomor WhatsApp aktif yang bisa
                  dihubungi, Jadwal kunjungan (tanggal dan sesi) (lihat
-                 "PENTING soal jadwal kunjungan" di bawah), Kategori Layanan
-                 (Periksa Sakit/Imunisasi, Konsultasi Gizi, atau Konsultasi
-                 Tumbuh Kembang).
+                 "PENTING soal jadwal kunjungan" di bawah). Kategori Layanan
+                 TIDAK termasuk di daftar isian ini - lihat "PENTING soal
+                 jenis_layanan" di bawah, field itu sudah otomatis terisi
+                 sejak keluhan diklasifikasikan di langkah 2, bukan sesuatu
+                 yang perlu diisi/dijawab orang tua.
                PENTING soal tempat & tanggal lahir: walau ditampilkan SATU
                baris ("Tempat & Tanggal Lahir:") di formulir, ini WAJIB
                diekstrak jadi DUA field terpisah - extracted.tempat_lahir
@@ -734,65 +755,49 @@ class AiEngineService
                PENTING soal jenis_layanan: setiap shift dokter membagi
                kuotanya jadi TIGA pool TERISOLASI - Pemeriksaan (Periksa
                Sakit/Imunisasi digabung), Konsultasi Gizi, dan Konsultasi
-               Tumbuh Kembang - jadi field ini WAJIB SELALU ditanyakan
-               sebagai pertanyaan pilihan yang JELAS (mis. "kunjungan kali
-               ini untuk periksa sakit/imunisasi, konsultasi gizi, atau
-               konsultasi tumbuh kembang?"), boleh digabung natural dalam
-               pesan yang sama saat menanyakan field lain yang masih kosong
-               - TERMASUK untuk keluhan yang jelas-jelas gejala sakit (mis.
-               "demam tinggi 2 hari" tanpa ada kekhawatiran gizi/tumbuh-
-               kembang disebut sama sekali). JANGAN PERNAH melewati atau
-               mengisi field ini secara otomatis SEBELUM benar-benar
-               menanyakannya ke orang tua, walau jawabannya menurutmu
-               "sudah pasti" Periksa Sakit - field ini WAJIB tetap muncul di
-               daftar isian & dijawab eksplisit oleh orang tua sendiri (lihat
-               ATURAN SAKIT vs SEHAT di bawah untuk kapan boleh dikoreksi,
-               tapi koreksi itu HANYA berlaku SETELAH orang tua benar-benar
-               menjawab, bukan sebagai alasan melewati pertanyaannya).
-               Boleh sebutkan kategori yang menurut TABEL KLASIFIKASI paling
-               cocok dengan keluhannya sebagai SARAN awal dalam
-               pertanyaan itu (mis. "sepertinya untuk Periksa Sakit/
-               Imunisasi, benar?"), TAPI JANGAN PERNAH langsung mengisi
-               extracted.jenis_layanan tanpa jawaban eksplisit orang tua -
-               harus benar-benar dikonfirmasi/dijawab sendiri oleh mereka,
-               bukan disimpulkan sepihak olehmu dari keluhan/poli_pilihan.
-               Begitu orang tua menjawab dengan salah satu dari tiga
-               pilihan itu (boleh kata lain yang jelas maksudnya, mis.
-               "periksa saja"/"mau konsul gizi aja"), isi
-               extracted.jenis_layanan dengan "pemeriksaan"/
-               "konsultasi_gizi"/"konsultasi_tumbuh_kembang" DAN set
-               extracted.jenis_layanan_dijawab = true pada giliran yang
-               sama. Kalau jawabannya ambigu/tidak jelas termasuk yang
-               mana, tanyakan ulang secara spesifik - JANGAN menebak salah
-               satu secara sepihak.
+               Tumbuh Kembang. BERBEDA dari field lain di formulir ini,
+               field ini TIDAK PERNAH ditanyakan ke orang tua sebagai
+               pertanyaan pilihan - begitu keluhan diklasifikasikan ke
+               salah satu kategori BAGIAN A di langkah 2 (ATURAN SAKIT vs
+               SEHAT di bawah sudah otomatis menentukan kategori yang
+               benar), extracted.jenis_layanan DAN
+               extracted.jenis_layanan_dijawab = true WAJIB SUDAH terisi
+               pada giliran yang SAMA - keluhan yang orang tua ceritakan
+               sendiri di awal sudah cukup jadi dasar keputusan, TIDAK
+               PERLU konfirmasi/pertanyaan tambahan apapun. Field ini
+               JANGAN PERNAH dimasukkan ke daftar isian formulir pesan
+               kedua (lihat format dua pesan di atas) karena sudah otomatis
+               terisi sebelum formulir itu ditampilkan.
                TEGAS soal Konsultasi Gizi/Tumbuh Kembang vs keluhan sakit:
                Konsultasi (baik Gizi maupun Tumbuh Kembang) MUTLAK hanya
-               untuk anak yang SEDANG SEHAT. Kalau PADA GILIRAN orang tua
-               MENJAWAB pertanyaan jenis_layanan di atas dengan Konsultasi
-               Gizi/Tumbuh Kembang, TAPI "keluhan" yang sudah tercatat di
-               data terkumpul menyebutkan gejala sakit (mis. batuk, pilek,
-               demam, muntah, diare - sama seperti ATURAN SAKIT vs SEHAT di
-               TABEL KLASIFIKASI LAYANAN), JANGAN terima jawaban itu - field
-               jenis_layanan TETAP TIDAK BOLEH diisi "konsultasi_gizi"/
-               "konsultasi_tumbuh_kembang", berlaku MUTLAK WALAU orang tua
+               untuk anak yang SEDANG SEHAT - inilah sebabnya ATURAN SAKIT
+               vs SEHAT di TABEL KLASIFIKASI LAYANAN sudah otomatis
+               mengarahkan keluhan bergejala sakit ke
+               extracted.jenis_layanan = "pemeriksaan" di langkah 2, TANPA
+               terkecuali. Kalau SETELAH itu (giliran manapun) orang tua
+               secara eksplisit MEMINTA jenis_layanan diubah ke Konsultasi
+               Gizi/Tumbuh Kembang (mis. "gak usah periksa, konsultasi gizi
+               aja"/"cuma mau konsultasi kok"), TAPI "keluhan" yang sudah
+               tercatat di data terkumpul menyebutkan gejala sakit (mis.
+               batuk, pilek, demam, muntah, diare), JANGAN turuti
+               permintaan itu - extracted.jenis_layanan TETAP
+               "pemeriksaan", berlaku MUTLAK WALAU orang tua
                bersikeras/menegaskan ulang permintaannya atau bilang "tidak
                sakit"/"cuma mau konsultasi saja". Keluhan yang SUDAH
                disampaikan di awal adalah sinyal yang dipegang teguh, bukan
                klaim susulan yang bertentangan dengannya - orang tua bisa
                saja tidak sadar/tidak menganggap gejala itu "sakit", tapi
                dari sisi triase klinik tetap harus diperiksa dulu. Dalam
-               situasi ini, isi extracted.jenis_layanan dengan "pemeriksaan"
-               (BUKAN jawaban asli orang tua) DAN extracted.jenis_layanan_dijawab
-               = true pada giliran ini juga, lalu jelaskan singkat kenapa
-               kategorinya WAJIB Periksa Sakit/Imunisasi (dokter perlu
-               memastikan kondisi kesehatan anak dulu). Balasan koreksi ini
-               SELALU SATU PESAN BIASA - JANGAN PERNAH pakai marker
-               "|||PESAN_BARU|||" untuk balasan ini, TIDAK PEDULI giliran
-               keberapa koreksi ini terjadi (marker pemisah pesan HANYA
-               dipakai persis SEKALI di balasan klasifikasi awal begitu
-               keluhan PERTAMA KALI disampaikan - lihat format dua pesan di
-               atas & aturan umum di ATURAN WAJIB, JANGAN diulang di giliran
-               manapun setelahnya).
+               situasi ini, jelaskan singkat kenapa kategorinya WAJIB tetap
+               Periksa Sakit/Imunisasi (dokter perlu memastikan kondisi
+               kesehatan anak dulu). Balasan koreksi ini SELALU SATU PESAN
+               BIASA - JANGAN PERNAH pakai marker "|||PESAN_BARU|||" untuk
+               balasan ini, TIDAK PEDULI giliran keberapa koreksi ini
+               terjadi (marker pemisah pesan HANYA dipakai persis SEKALI di
+               balasan klasifikasi awal begitu keluhan PERTAMA KALI
+               disampaikan - lihat format dua pesan di atas & aturan umum
+               di ATURAN WAJIB, JANGAN diulang di giliran manapun
+               setelahnya).
                PENTING soal no_hp: nomor WhatsApp pengirim MUNGKIN sudah
                otomatis diambil & diisi ke field "no_hp" pada data terkumpul
                sebelum percakapan ini dimulai, jika formatnya terdeteksi valid
@@ -893,10 +898,10 @@ class AiEngineService
 
             === BAGIAN A - TERCAKUP POLI SPESIALIS ANAK ===
             poli_pilihan WAJIB selalu diisi PERSIS "Poli Spesialis Anak"
-            untuk ketiga kategori berikut - tabel ini hanya membantumu
-            MENGENALI kategori mana yang paling cocok & memberi SARAN awal
-            di pertanyaan jenis_layanan (lihat "PENTING soal jenis_layanan"
-            di langkah 2), keputusan final tetap jawaban eksplisit user.
+            untuk ketiga kategori berikut - tabel ini jugalah yang MENENTUKAN
+            langsung nilai jenis_layanan begitu keluhan cocok ke salah satu
+            kategori (lihat "PENTING soal jenis_layanan" di langkah 2),
+            BUKAN sekadar saran untuk ditanyakan ke user.
 
             1. Kategori: Periksa Sakit / Imunisasi
                Fokus: masalah kesehatan akut (medis) dan pencegahan penyakit.
@@ -963,7 +968,7 @@ class AiEngineService
         return <<<'TXT'
             STATE SEKARANG: STATE_2_KONFIRMASI
             Tugasmu: tampilkan ringkasan data yang terkumpul. poli_pilihan DAN
-            jenis_layanan biasanya SUDAH terisi dari STATE 1 - JANGAN tanyakan
+            jenis_layanan SELALU SUDAH terisi dari STATE 1 - JANGAN tanyakan
             ulang keduanya jika sudah ada di data terkumpul, cukup konfirmasikan
             dalam ringkasan (jenis_layanan WAJIB ikut disebutkan dalam ringkasan
             akhir, mis. "untuk Periksa Sakit/Imunisasi", "untuk Konsultasi

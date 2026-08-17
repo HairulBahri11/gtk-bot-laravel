@@ -1065,11 +1065,12 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         // AI) - itu menghasilkan DUA kali tanya-konfirmasi berturut-turut ke
         // user (versi AI, lalu versi server di bawah), padahal cuma perlu
         // satu. Begitu shift+tanggal terisi, langsung lanjut ke resolusi
-        // slot & tawarkan SATU KALI lewat mekanisme slot_ditawarkan di bawah
-        // - itu sudah cukup sebagai titik "user benar-benar melihat &
-        // menyetujui tanggal final sebelum booking dibuat" (server-composed,
-        // bukan ringkasan AI, dan tetap wajib giliran TERPISAH sebelum
-        // createBooking() dipanggil - lihat komentar slot_ditawarkan).
+        // slot - kalau tanggalnya diminta eksplisit oleh pasien sendiri,
+        // hasil resolusi itu langsung dipakai booking TANPA giliran
+        // konfirmasi tambahan lagi (pasien sudah menyatakannya sendiri di
+        // formulir/balasannya); giliran konfirmasi via slot_ditawarkan HANYA
+        // dipakai untuk cabang "secepatnya" (lihat komentar slot_ditawarkan
+        // di bawah untuk alasannya).
         $tanggalRaw = is_string($tanggalInput) ? trim($tanggalInput) : null;
         $tanggalSecepatnya = $tanggalRaw !== null && strtolower($tanggalRaw) === 'secepatnya';
 
@@ -1172,33 +1173,41 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             }
         }
 
-        // JANGAN PERNAH langsung booking begitu $slot ketemu - baik lewat
-        // tanggal spesifik MAUPUN "secepatnya". Kejadian nyata: AI kadang
-        // langsung mengisi tanggal_kunjungan sendiri (match persis dengan
-        // jadwal yang ada) TANPA PERNAH benar-benar menanyakannya ke user -
-        // ringkasan yang ditampilkan AI bahkan bisa tidak menyebut tanggal
-        // sama sekali, jadi konfirmasi "ya" dari user belum tentu benar-benar
-        // mengonfirmasi tanggal spesifik ini. Server TIDAK BOLEH percaya
-        // ringkasan AI sudah menyebut tanggal dengan benar - selalu tampilkan
-        // sendiri tanggal+shift hasil resolusi & minta konfirmasi EKSPLISIT
-        // sebagai giliran TERSENDIRI, baru booking beneran begitu slot PERSIS
-        // ini sudah pernah ditawarkan sebelumnya (dicek via slot_ditawarkan).
-        $slotKey = $slot['tanggal'].'|'.$slot['kode_dokter'].'|'.$shift->value;
+        // Kalau tanggal_kunjungan diminta EKSPLISIT oleh pasien sendiri
+        // (bukan "secepatnya") dan slot PERSIS tanggal+shift itu tersedia
+        // ($tanggalSecepatnya === false, cabang findSlotOnDate() di atas),
+        // JANGAN tanya konfirmasi lagi - pasien sudah menyatakan sendiri
+        // tanggal & shift ini (di formulir STATE_1 atau balasan eksplisitnya
+        // di STATE_2), beda dari kejadian lama yang melatarbelakangi
+        // mekanisme ini (AI diam-diam mengisi tanggal_kunjungan sendiri
+        // tanpa pernah menanyakannya - itu sekarang sudah dicegah oleh gate
+        // tanggal_kunjungan_dijawab di atas). Menanyakan ulang persetujuan
+        // untuk sesuatu yang sudah persis mereka minta sendiri hanya jadi
+        // konfirmasi ganda - langsung booking.
+        // Konfirmasi TETAP dipakai HANYA untuk cabang "secepatnya"
+        // (findNearestSlot() di atas) - di situ SISTEM yang memilihkan
+        // tanggal/dokternya, bukan pasien, jadi mereka belum pernah
+        // benar-benar melihat/menyetujui tanggal spesifik yang dipilihkan
+        // sebelum booking dibuat; giliran TERPISAH via slot_ditawarkan tetap
+        // wajib di sini.
+        if ($tanggalSecepatnya) {
+            $slotKey = $slot['tanggal'].'|'.$slot['kode_dokter'].'|'.$shift->value;
 
-        if (($context['slot_ditawarkan'] ?? null) !== $slotKey) {
-            $context['slot_ditawarkan'] = $slotKey;
+            if (($context['slot_ditawarkan'] ?? null) !== $slotKey) {
+                $context['slot_ditawarkan'] = $slotKey;
+                $session->context = $context;
+
+                $tanggalLabel = Carbon::parse($slot['tanggal'])->translatedFormat('d F Y');
+                $jamLabel = $this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai']);
+
+                return "Untuk poliklinik {$poli->nama_poliklinik}, jadwal yang tersedia adalah "
+                    ."{$tanggalLabel} shift {$shift->label()} pukul {$jamLabel}. Apakah Bunda/Ayah setuju dengan jadwal ini? "
+                    .'Balas "Ya" untuk konfirmasi, atau beri tahu kami kalau ingin tanggal/shift lain.';
+            }
+
+            unset($context['slot_ditawarkan']);
             $session->context = $context;
-
-            $tanggalLabel = Carbon::parse($slot['tanggal'])->translatedFormat('d F Y');
-            $jamLabel = $this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai']);
-
-            return "Untuk poliklinik {$poli->nama_poliklinik}, jadwal yang tersedia adalah "
-                ."{$tanggalLabel} shift {$shift->label()} pukul {$jamLabel}. Apakah Bunda/Ayah setuju dengan jadwal ini? "
-                .'Balas "Ya" untuk konfirmasi, atau beri tahu kami kalau ingin tanggal/shift lain.';
         }
-
-        unset($context['slot_ditawarkan']);
-        $session->context = $context;
 
         $booking = $antrean->createBooking($session, [
             'no_rm' => $session->no_rm,
