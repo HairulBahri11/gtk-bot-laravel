@@ -124,7 +124,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
         try {
             $reply = match ($session->state) {
-                ChatState::PengumpulanData => $this->handleStateOne($session, $result, $gtk, $matcher),
+                ChatState::PengumpulanData => $this->handleStateOne($session, $result, $gtk, $matcher, $antrean, $quota),
                 ChatState::Konfirmasi => $this->handleStateTwo($session, $result, $antrean, $quota),
                 ChatState::Done => $this->handleStateThree($session, $result, $antrean),
             };
@@ -507,7 +507,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
      * salah baca data tanpa ada tanda error apapun.
      */
     protected const KNOWN_CONTEXT_KEYS = [
-        'nama', 'tanggal_lahir', 'nama_ibu_kandung', 'jenis_kelamin', 'no_hp',
+        'nama', 'tanggal_lahir', 'tempat_lahir', 'nama_ibu_kandung', 'jenis_kelamin', 'no_hp',
         'no_hp_dikonfirmasi', 'keluhan', 'poli_pilihan', 'poli_disetujui',
         'jenis_layanan', 'jenis_layanan_dijawab',
         'shift_pilihan', 'tanggal_kunjungan', 'tanggal_kunjungan_dijawab',
@@ -583,7 +583,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
      * STATE_1_PENGUMPULAN_DATA - §6.A PRD: tidak melompat ke booking sebelum
      * nama, tanggal lahir, nama ibu, jenis kelamin, dan keluhan lengkap.
      */
-    protected function handleStateOne(ChatSession $session, array $result, GtkApiService $gtk, PatientMatcher $matcher): string
+    protected function handleStateOne(ChatSession $session, array $result, GtkApiService $gtk, PatientMatcher $matcher, AntreanService $antrean, QuotaService $quota): string
     {
         $context = $session->context;
 
@@ -618,7 +618,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             $session->context = $context;
         }
 
-        $required = ['nama', 'tanggal_lahir', 'nama_ibu_kandung', 'jenis_kelamin', 'no_hp', 'keluhan'];
+        $required = ['nama', 'tanggal_lahir', 'tempat_lahir', 'nama_ibu_kandung', 'jenis_kelamin', 'no_hp', 'keluhan'];
         $complete = collect($required)->every(fn ($field) => filled($context[$field] ?? null));
 
         // Jangan andalkan ready_for_next_state semata untuk syarat persetujuan
@@ -642,7 +642,34 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         // keluhan/poliklinik.
         $jenisLayananDijawab = ($context['jenis_layanan_dijawab'] ?? false) === true;
 
-        if (! $complete || ! $poliDisetujui || ! $noHpDikonfirmasi || ! $jenisLayananDijawab || ! $result['ready_for_next_state']) {
+        // shift_pilihan & tanggal_kunjungan (jadwal kunjungan) kini
+        // dikumpulkan bersama formulir STATE_1, bukan lagi ditanyakan
+        // belakangan di STATE_2 (lihat AiEngineService::stateOnePrompt()
+        // "PENTING soal jadwal kunjungan") - gate server-side yang sama
+        // persis seperti field lain di atas, supaya model yang lupa/keliru
+        // tidak bisa melompati pengisian jadwal kunjungan sebelum
+        // resolvePatient() dijalankan.
+        $shiftPilihanTerisi = filled($context['shift_pilihan'] ?? null);
+
+        // tanggal_kunjungan_dijawab bersifat STICKY_TRUE (lihat mergeContext())
+        // - kalau AI pernah keliru menandainya true TANPA pernah mengisi
+        // tanggal_kunjungan itu sendiri di giliran yang sama (kejadian nyata,
+        // lihat validasi serupa di resolveSlotAndReply()), flag itu akan
+        // macet permanen true & AI tidak akan pernah menanyakannya ulang
+        // (instruksi prompt: "SEKALI tanggal_kunjungan_dijawab true, jangan
+        // tanyakan ulang"). Bersihkan (unset) di sini SEBELUM dievaluasi
+        // sebagai gate, sama seperti pola reset no_hp/jenis_layanan tidak
+        // valid di atas, supaya AI wajib menanyakan ulang secara eksplisit.
+        if (($context['tanggal_kunjungan_dijawab'] ?? false) === true && blank($context['tanggal_kunjungan'] ?? null)) {
+            unset($context['tanggal_kunjungan_dijawab']);
+            $session->context = $context;
+        }
+
+        $tanggalKunjunganDijawab = ($context['tanggal_kunjungan_dijawab'] ?? false) === true
+            && filled($context['tanggal_kunjungan'] ?? null);
+
+        if (! $complete || ! $poliDisetujui || ! $noHpDikonfirmasi || ! $jenisLayananDijawab
+            || ! $shiftPilihanTerisi || ! $tanggalKunjunganDijawab || ! $result['ready_for_next_state']) {
             return $result['reply'];
         }
 
@@ -665,29 +692,15 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         $session->state = ChatState::Konfirmasi->value;
         $session->step = 'pilih_poli_shift';
 
-        // poli_pilihan biasanya sudah terisi dari hasil klasifikasi keluhan
-        // di STATE_1 (lihat AiEngineService::stateOnePrompt) - jangan minta
-        // pilih ulang, cukup minta shift + konfirmasi akhir. jenis_layanan
-        // WAJIB juga sudah terisi di titik ini (jenis_layanan_dijawab adalah
-        // salah satu syarat ready_for_next_state di handleStateOne()) -
-        // sertakan labelnya di sini supaya pesan transisi STATE_1->STATE_2
-        // tidak diam-diam "lupa" menyebutkan kategori Pemeriksaan/Konsultasi
-        // yang baru saja disepakati, cuma menyebut nama poliklinik saja.
-        if (filled($context['poli_pilihan'] ?? null)) {
-            $jenisLabel = JenisLayanan::tryFrom((string) ($context['jenis_layanan'] ?? ''))?->label();
-            $layananText = $jenisLabel
-                ? "kategori layanan {$jenisLabel} pada {$context['poli_pilihan']}"
-                : $context['poli_pilihan'];
-
-            return "Terima kasih. Data {$context['nama']} sudah tersimpan (No. RM: {$noRm}).\n\n"
-                ."Untuk {$layananText}, silakan pilih shift kunjungan (Pagi/Sore/Malam).";
-        }
-
-        $poliOptions = Poliklinik::query()->where('is_active', true)->pluck('nama_poliklinik')->implode(', ');
-
-        return "Terima kasih. Data {$context['nama']} sudah tersimpan (No. RM: {$noRm}).\n\n"
-            ."Silakan pilih poliklinik dan shift kunjungan (Pagi/Sore/Malam).\n"
-            ."Poliklinik tersedia: {$poliOptions}";
+        // poli_pilihan, jenis_layanan, shift_pilihan, DAN tanggal_kunjungan
+        // sudah WAJIB semuanya terisi di titik ini (semuanya syarat
+        // ready_for_next_state di atas - lihat AiEngineService::
+        // stateOnePrompt() "Jadwal kunjungan" kini dikumpulkan bersama
+        // formulir STATE_1, bukan ditanyakan belakangan) - jadi langsung
+        // lanjut ke resolusi slot & tawarkan jadwal SATU KALI, sama persis
+        // dengan STATE_2 (lihat resolveSlotAndReply()), tanpa perlu
+        // menanyakan shift/tanggal lagi di sini.
+        return $this->resolveSlotAndReply($session, $context, $result, $antrean, $quota);
     }
 
     /**
@@ -862,6 +875,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             $patient = $candidate['raw'];
             $patient->nama = $context['nama'] ?? $patient->nama;
             $patient->nama_ibu_kandung = $context['nama_ibu_kandung'] ?? $patient->nama_ibu_kandung;
+            $patient->tempat_lahir = $context['tempat_lahir'] ?? $patient->tempat_lahir;
             $patient->no_hp = $noHp !== '-' ? $noHp : $patient->no_hp;
             $patient->last_synced_at = now();
             $patient->save();
@@ -879,6 +893,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             'nama' => $match['nama'] ?? $context['nama'],
             'jk' => ($match['jeniskelamin'] ?? null) === 'L' ? 'LAKI-LAKI' : 'PEREMPUAN',
             'tanggal_lahir' => $match['tanggallahir'] ?? $context['tanggal_lahir'],
+            'tempat_lahir' => $match['tempatlahir'] ?? $context['tempat_lahir'] ?? null,
             'nama_ibu_kandung' => $match['namaibu'] ?? $context['nama_ibu_kandung'],
             // Utamakan nomor yang baru saja dikonfirmasi orang tua di
             // chat ini ($noHp) daripada nomor lama yang sudah tercatat
@@ -920,6 +935,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             'nama' => $context['nama'],
             'jk' => $context['jenis_kelamin'],
             'tanggal_lahir' => $context['tanggal_lahir'],
+            'tempat_lahir' => $context['tempat_lahir'] ?? null,
             'nama_ibu_kandung' => $context['nama_ibu_kandung'],
             'no_hp' => $noHp,
             'last_synced_at' => now(),
@@ -997,16 +1013,31 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
     /**
      * STATE_2_KONFIRMASI - pilih poliklinik & shift, cek kuota, buat booking
-     * atau waitlist (§3.1 langkah 4-5 & §3.2 PRD).
+     * atau waitlist (§3.1 langkah 4-5 & §3.2 PRD). Sekarang jadi fallback
+     * tipis - jalur normal adalah handleStateOne() sudah mengumpulkan
+     * jadwal kunjungan bersama formulir pendaftaran, tapi kalau entah
+     * kenapa itu belum terisi saat STATE_1 selesai, STATE_2 tetap bisa
+     * menanyakannya di sini lewat resolveSlotAndReply() yang sama persis.
      */
     protected function handleStateTwo(ChatSession $session, array $result, AntreanService $antrean, QuotaService $quota): string
     {
-        $context = $session->context;
-
         if (! $result['ready_for_next_state']) {
             return $result['reply'];
         }
 
+        return $this->resolveSlotAndReply($session, $session->context, $result, $antrean, $quota);
+    }
+
+    /**
+     * Resolusi slot jadwal (verifikasi kuota REAL, bukan sekadar percaya
+     * permintaan user) & pembuatan booking - dipakai dari DUA titik:
+     * handleStateOne() (jalur normal sekarang, begitu formulir pendaftaran
+     * STATE_1 lengkap TERMASUK jadwal kunjungan - lihat AiEngineService::
+     * stateOnePrompt() "PENTING soal jadwal kunjungan") dan handleStateTwo()
+     * (fallback di atas).
+     */
+    protected function resolveSlotAndReply(ChatSession $session, array $context, array $result, AntreanService $antrean, QuotaService $quota): string
+    {
         $poliInput = $context['poli_pilihan'] ?? null;
         $shiftInput = $context['shift_pilihan'] ?? null;
         $tanggalInput = $context['tanggal_kunjungan'] ?? null;
@@ -1021,6 +1052,9 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         // di server (sama seperti pola poli_disetujui/no_hp_dikonfirmasi),
         // supaya model yang lupa/keliru langsung set ready_for_next_state
         // tanpa pernah menanyakan tanggal tidak bisa melompati konfirmasi ini.
+        // Titik penjagaan TERAKHIR ini berlaku SAMA dari kedua pemanggil di
+        // atas - handleStateOne() sendiri juga sudah menegakkan ini di
+        // gate-nya sebelum pernah sampai ke sini.
         if (! $tanggalDijawab) {
             return $result['reply'];
         }
@@ -1206,13 +1240,15 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             return $pesan;
         }
 
-        return "Booking berhasil!\n"
-            ."Poliklinik: {$poli->nama_poliklinik}\n"
-            ."Jenis Layanan: {$jenis->label()}\n"
-            ."Tanggal: {$slot['tanggal']}\n"
-            ."Shift: {$shift->label()} (pukul {$this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai'])})\n"
-            ."No. Rawat: {$booking->no_rawat}\n\n"
-            .'Kami akan mengirim pengingat H-1, 3 jam, dan 1 jam sebelum jadwal.';
+        $namaDokter = Doctor::query()->where('kode_dokter', $slot['kode_dokter'])->value('nama_dokter') ?? $slot['kode_dokter'];
+        $tanggalLabel = Carbon::parse($slot['tanggal'])->translatedFormat('d F Y');
+        $jamLabel = $this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai']);
+
+        return "Terima kasih Ayah/Bunda.\n"
+            ."Adik {$context['nama']} telah terdaftar di jadwal {$jenis->label()} {$namaDokter} pada {$tanggalLabel}, pukul {$jamLabel}.\n\n"
+            .'Untuk nomor antrean akan disesuaikan dengan kedatangan di Graha Tumbuh Kembang.'
+            ."\n\nGraha Tumbuh Kembang\n"
+            .'Solusi Kesehatan & Tumbuh Kembang Anak';
     }
 
     /**

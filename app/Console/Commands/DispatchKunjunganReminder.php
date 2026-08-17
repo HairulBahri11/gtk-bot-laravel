@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Enums\JenisLayanan;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -29,11 +30,18 @@ class DispatchKunjunganReminder extends Command
 
     protected $description = 'Evaluasi window reminder H-1 hari/3 jam/1 jam & kirim WA (tabel kunjungan_reminder di Supabase)';
 
-    /** @var array<string, string> */
+    /**
+     * Kata "besok"/"hari ini" yang dipakai di badan pesan (lihat
+     * buildMessage()) - H-1 hari betul-betul besok, sedangkan H-3 jam/H-1
+     * jam sama-sama masih di HARI YANG SAMA (cuma beda seberapa dekat jam
+     * kunjungannya), jadi keduanya WAJIB bilang "hari ini", BUKAN "besok".
+     *
+     * @var array<string, string>
+     */
     protected array $labels = [
         'h1hari' => 'besok',
-        'h3jam' => 'dalam 3 jam',
-        'h1jam' => 'dalam 1 jam',
+        'h3jam' => 'hari ini',
+        'h1jam' => 'hari ini',
     ];
 
     public function handle(): int
@@ -143,9 +151,50 @@ class DispatchKunjunganReminder extends Command
     protected function buildMessage(string $kind, string $label, object $row): string
     {
         $jam = substr((string) $row->jam_kunjungan, 0, 5);
+        $poli = $row->poli ?: 'poliklinik terkait';
+        $dokter = $row->dokter ?: 'dokter terkait';
 
-        return "Pengingat: kunjungan {$row->nama_pasien} ke ".($row->poli ?? '-').' ('.($row->dokter ?? '-').') '
-            ."akan berlangsung {$label}, pukul {$jam}. Mohon datang tepat waktu.";
+        // kunjungan_reminder disinkronkan dari GTK reminderkunjungan (lihat
+        // SyncKunjunganReminder) - API itu TIDAK mengembalikan kategori
+        // layanan (Periksa Sakit/Konsultasi Gizi/dst) sama sekali, jadi
+        // dicari dari bookings kita sendiri lewat no_rawat yang sama. Kalau
+        // kunjungan ini bukan hasil booking lewat bot (mis. jalur lain di
+        // GTK), tidak ketemu - klausa "untuk ..." cukup dilewati, bukan
+        // menampilkan nilai kosong/null.
+        $jenisLayanan = $this->jenisLayananLabel($row->no_rawat);
+        $untukLayanan = $jenisLayanan ? " untuk {$jenisLayanan}" : '';
+
+        return "Selamat {$this->sapaanWaktu()},\n"
+            .'Kami dari Graha Tumbuh Kembang Anak Jombang ingin mengingatkan jadwal kunjungan '
+            ."{$row->nama_pasien}{$untukLayanan} di {$poli} bersama {$dokter} yang akan berlangsung "
+            ."{$label} pukul {$jam} WIB.\n\n"
+            .'Mohon bantuannya untuk mengonfirmasi kehadiran ya. Terima kasih banyak! 😊🙏';
+    }
+
+    /**
+     * Sapaan waktu (Pagi/Siang/Sore/Malam) dihitung dari jam KIRIM reminder
+     * ini, BUKAN jam kunjungan yang diingatkan - reminder H-1 hari yang
+     * dikirim pagi tetap "Selamat Pagi" walau kunjungannya sendiri sore.
+     * Selalu pakai Asia/Jakarta eksplisit (sama seperti seluruh query window
+     * H-1/H-3/H-1 di atas), TIDAK bergantung timezone default aplikasi.
+     */
+    protected function sapaanWaktu(): string
+    {
+        $jam = (int) now('Asia/Jakarta')->format('G');
+
+        return match (true) {
+            $jam >= 3 && $jam < 11 => 'Pagi',
+            $jam >= 11 && $jam < 15 => 'Siang',
+            $jam >= 15 && $jam < 19 => 'Sore',
+            default => 'Malam',
+        };
+    }
+
+    protected function jenisLayananLabel(string $noRawat): ?string
+    {
+        $value = DB::connection('pgsql')->table('bookings')->where('no_rawat', $noRawat)->value('jenis_layanan');
+
+        return $value ? JenisLayanan::tryFrom($value)?->label() : null;
     }
 
     /**

@@ -5,6 +5,7 @@ namespace App\Services\Ai;
 use App\Enums\ChatState;
 use App\Models\ChatSession;
 use App\Models\DoctorSchedule;
+use App\Models\Poliklinik;
 use App\Models\QuotaShift;
 use App\Models\WhatsappMessage;
 use App\Support\IndonesianPhoneNumber;
@@ -259,13 +260,141 @@ class AiEngineService
         return $lines === [] ? '(Tidak ada jadwal dokter tercatat untuk hari ini/besok.)' : implode("\n", $lines);
     }
 
+    /**
+     * Ringkasan jadwal praktik MINGGUAN (pola berulang, bukan tanggal
+     * spesifik) untuk Poli Spesialis Anak - dipakai khusus di STATE_1
+     * langkah 2 pesan pertama (lihat stateOnePrompt()) supaya orang tua
+     * langsung melihat pilihan hari/sesi dokter SEBELUM mengisi "Jadwal
+     * kunjungan" di formulir pendaftaran, bukan cuma diarahkan ke
+     * poliklinik tanpa konteks jadwal sama sekali. BEDA dari
+     * doctorScheduleSummary() di atas (yang scoped hari ini+besok untuk
+     * FAQ jadwal) - di sini sengaja SELURUH pola mingguan karena tujuannya
+     * membantu orang tua memilih tanggal/sesi sendiri, bukan menjawab
+     * pertanyaan tentang tanggal tertentu.
+     *
+     * HANYA baris source='manual', sama seperti doctorScheduleSummary()
+     * (lihat docblock di sana untuk alasan baris 'gtk' tidak diikutkan).
+     */
+    protected function weeklyScheduleSummaryForPoliAnak(): string
+    {
+        $poli = Poliklinik::query()->where('nama_poliklinik', 'Poli Spesialis Anak')->first();
+
+        if (! $poli) {
+            return '(Data poliklinik Poli Spesialis Anak tidak ditemukan.)';
+        }
+
+        $schedules = DoctorSchedule::query()
+            ->with('doctor')
+            ->where('kode_poliklinik', $poli->kode_poliklinik)
+            ->where('source', 'manual')
+            ->whereHas('doctor', fn ($q) => $q->where('is_active', true))
+            ->get();
+
+        if ($schedules->isEmpty()) {
+            return '(Tidak ada jadwal dokter tercatat untuk Poli Spesialis Anak.)';
+        }
+
+        $hariIsoMap = ['SENIN' => 1, 'SELASA' => 2, 'RABU' => 3, 'KAMIS' => 4, 'JUMAT' => 5, 'SABTU' => 6, 'MINGGU' => 7];
+        $hariLabel = [1 => 'Senin', 2 => 'Selasa', 3 => 'Rabu', 4 => 'Kamis', 5 => 'Jumat', 6 => 'Sabtu', 7 => 'Minggu'];
+        $shiftLabel = ['pagi' => 'Pagi', 'sore' => 'Sore', 'malam' => 'Malam'];
+
+        $lines = [];
+
+        foreach ($schedules->groupBy('kode_dokter') as $doctorSchedules) {
+            $namaDokter = $doctorSchedules->first()->doctor?->nama_dokter ?? $doctorSchedules->first()->kode_dokter;
+            $lines[] = "- {$namaDokter}";
+
+            // Kelompokkan per kombinasi (shift, jam_mulai, jam_selesai) -
+            // hari-hari yang punya kombinasi PERSIS SAMA digabung jadi satu
+            // baris (direntang kalau berurutan, mis. "Senin - Jumat"),
+            // supaya jadwal yang jamnya beda-beda tiap hari (lihat data
+            // nyata dr. Retno: Sabtu jam pagi & sore-nya beda dari hari
+            // kerja) tetap terpisah otomatis, bukan dipaksa satu rentang.
+            $tripletGroups = $doctorSchedules->groupBy(
+                fn (DoctorSchedule $s) => $s->shift->value.'|'.$s->jam_mulai.'|'.$s->jam_selesai
+            );
+
+            $tripletLines = [];
+
+            foreach ($tripletGroups as $key => $rows) {
+                [$shiftValue, $jamMulai, $jamSelesai] = explode('|', $key);
+
+                $isoDays = $rows
+                    ->map(fn (DoctorSchedule $s) => $hariIsoMap[$s->hari] ?? null)
+                    ->filter()
+                    ->unique()
+                    ->sort()
+                    ->values()
+                    ->all();
+
+                if (empty($isoDays)) {
+                    continue;
+                }
+
+                $rangeLabels = collect($this->collapseConsecutiveDays($isoDays))
+                    ->map(function (array $range) use ($hariLabel) {
+                        return count($range) > 1
+                            ? "{$hariLabel[$range[0]]} - {$hariLabel[end($range)]}"
+                            : $hariLabel[$range[0]];
+                    })
+                    ->implode(', ');
+
+                $jam = substr($jamMulai, 0, 5).' - '.substr($jamSelesai, 0, 5);
+                $shiftText = $shiftLabel[$shiftValue] ?? $shiftValue;
+
+                $tripletLines[] = [
+                    'sortKey' => [$isoDays[0], $jamMulai],
+                    'text' => "  {$rangeLabels}: {$shiftText} {$jam}",
+                ];
+            }
+
+            usort($tripletLines, fn (array $a, array $b) => $a['sortKey'] <=> $b['sortKey']);
+
+            foreach ($tripletLines as $tripletLine) {
+                $lines[] = $tripletLine['text'];
+            }
+        }
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * Ubah daftar angka hari ISO (1=Senin..7=Minggu) jadi kelompok-kelompok
+     * hari BERURUTAN, mis. [1,2,3,4,5,6] -> [[1,2,3,4,5,6]], [1,2,4] ->
+     * [[1,2],[4]] - dipakai weeklyScheduleSummaryForPoliAnak() untuk
+     * merentang "Senin - Sabtu" alih-alih daftar hari satu-satu.
+     *
+     * @param  array<int, int>  $isoDays  WAJIB sudah terurut & unik.
+     * @return array<int, array<int, int>>
+     */
+    protected function collapseConsecutiveDays(array $isoDays): array
+    {
+        $ranges = [];
+        $current = [];
+
+        foreach ($isoDays as $day) {
+            if (empty($current) || $day === end($current) + 1) {
+                $current[] = $day;
+            } else {
+                $ranges[] = $current;
+                $current = [$day];
+            }
+        }
+
+        if (! empty($current)) {
+            $ranges[] = $current;
+        }
+
+        return $ranges;
+    }
+
     protected function buildSystemPrompt(ChatSession $session): string
     {
         $context = $session->context ?? [];
         $contextJson = json_encode($context, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
         $stateInstruction = match ($session->state) {
-            ChatState::PengumpulanData => $this->stateOnePrompt(),
+            ChatState::PengumpulanData => $this->stateOnePrompt($this->weeklyScheduleSummaryForPoliAnak()),
             ChatState::Konfirmasi => $this->stateTwoPrompt(),
             ChatState::Done => $this->stateThreePrompt(),
         };
@@ -405,6 +534,7 @@ class AiEngineService
                 "extracted": {
                   "nama": "<atau null>",
                   "tanggal_lahir": "<yyyy-mm-dd atau null>",
+                  "tempat_lahir": "<kota/tempat lahir, atau null>",
                   "nama_ibu_kandung": "<atau null>",
                   "jenis_kelamin": "<LAKI-LAKI|PEREMPUAN atau null>",
                   "no_hp": "<nomor WhatsApp aktif, format 08xxxxxxxxxx atau
@@ -469,9 +599,9 @@ class AiEngineService
             PROMPT;
     }
 
-    protected function stateOnePrompt(): string
+    protected function stateOnePrompt(string $weeklySchedule): string
     {
-        return <<<'TXT'
+        return <<<TXT
             STATE SEKARANG: STATE_1_PENGUMPULAN_DATA
 
             (Gaya komunikasi & batasan dramatisasi/redundansi lihat aturan gaya di
@@ -481,20 +611,18 @@ class AiEngineService
             1. Jika "keluhan" pada data terkumpul masih kosong, JANGAN tanya nama/
                tanggal lahir/dll dulu. Pada giliran PERTAMA percakapan (belum
                ada satupun pesan "assistant" di riwayat percakapan), WAJIB
-               buka reply PERSIS dengan kalimat berikut apa adanya - kalimat
-               pembuka baku, BUKAN sekadar contoh. Sapaan singkat "Halo
-               Ayah/Bunda," di depannya BOLEH & sebaiknya disertakan persis
-               seperti ini, TAPI JANGAN ditambah basa-basi lain apapun
-               setelahnya (mis. "Saya dari tim..."/"senang bisa
-               membantu..."), dan JANGAN menyebut diri AI/asisten
-               virtual/chatbot (lihat aturan gaya di atas):
+               buka reply PERSIS dengan kalimat berikut apa adanya (satu
+               kalimat pembuka baku, BUKAN sekadar contoh, JANGAN
+               diparafrase/ditambah basa-basi lain apapun mis. "Saya dari
+               tim..."/"senang bisa membantu...", dan JANGAN menyebut diri
+               AI/asisten virtual/chatbot - lihat aturan gaya di atas):
 
-               "Halo Ayah/Bunda, selamat datang di Graha Tumbuh Kembang Anak Jombang."
+               "Halo Ayah/Bunda, selamat datang di Graha Tumbuh Kembang Anak Jombang. Mohon informasikan keluhan atau kondisi anak yang ingin dikonsultasikan."
 
-               Langsung disusul PERSIS daftar layanan berikut apa adanya
-               (hard selling - tegas & percaya diri menonjolkan kelengkapan
-               layanan, JANGAN diparafrase, diringkas, atau diubah
-               urutannya):
+               Langsung disusul (baris baru/paragraf terpisah) PERSIS daftar
+               layanan berikut apa adanya (hard selling - tegas & percaya
+               diri menonjolkan kelengkapan layanan, JANGAN diparafrase,
+               diringkas, atau diubah urutannya):
 
                Berikut adalah layanan kami:
                ✅ Dokter Spesialis Anak
@@ -513,15 +641,11 @@ class AiEngineService
 
                Kalimat pembuka & daftar ini HANYA ditampilkan pada giliran
                PERTAMA percakapan - kalau riwayat sudah pernah
-               menampilkannya, JANGAN diulang lagi, langsung ke pertanyaan
-               keluhan saja supaya tidak redundant.
-               Setelah daftar (atau langsung, kalau daftar ini dilewati sesuai
-               aturan di atas), tanyakan keluhan/kondisi anak dalam SATU
-               kalimat tanya yang singkat & padat - jangan bertele-tele atau
-               berbasa-basi panjang. Boleh sertakan 1-2 contoh singkat (mis.
-               batuk pilek, belum bisa bicara) kalau membantu orang tua
-               menjawab, tapi rangkai kalimatnya sendiri - jangan menghafal
-               template apapun.
+               menampilkannya, JANGAN diulang lagi, langsung tanyakan
+               keluhan/kondisi anak saja (boleh dengan kalimatmu sendiri,
+               tidak perlu persis seperti di atas lagi) supaya tidak
+               redundant. Boleh sertakan 1-2 contoh singkat (mis. batuk
+               pilek, belum bisa bicara) kalau membantu orang tua menjawab.
                Kalau pesan user di giliran ini JUGA berisi pertanyaan jadwal
                dokter yang tercakup di DATA JADWAL DOKTER (lihat ATURAN
                WAJIB), jawab dulu pertanyaan itu di awal reply yang sama,
@@ -569,20 +693,44 @@ class AiEngineService
                - Pesan pertama: tunjukkan empati singkat atas kondisi yang
                  diceritakan, LALU informasikan poliklinik tujuannya
                  ("Poli Spesialis Anak", dengan bahasamu sendiri) sebagai
-                 KEPASTIAN. JANGAN sertakan permintaan data pendaftaran
-                 apapun di pesan ini - cukup empati + arahan poliklinik
-                 saja, singkat & padat.
+                 KEPASTIAN, LANGSUNG DISUSUL (paragraf/baris terpisah,
+                 pesan yang SAMA) jadwal praktik dokternya - pakai PERSIS
+                 data berikut, JANGAN mengarang jam/hari di luar ini:
+
+                 {$weeklySchedule}
+
+                 Format jadwal ini bebas asal jelas per dokter (nama dokter,
+                 hari praktik, sesi & jam) - boleh dirangkai ulang dengan
+                 bahasamu sendiri asal ANGKA & HARINYA PERSIS sama dengan
+                 data di atas, JANGAN diringkas/dihilangkan sebagian.
+                 JANGAN sertakan permintaan data pendaftaran apapun di pesan
+                 ini - cukup empati + arahan poliklinik + jadwal saja (boleh
+                 lebih panjang dari pesan-pesan lain karena memuat jadwal,
+                 tapi tetap tanpa basa-basi tambahan di luar itu).
                - Pesan kedua: kalimat pembuka bahwa data pendaftaran perlu
-                 dilengkapi (mis. "Lengkapi data pendaftaran berikut ya:",
-                 boleh dirangkai dengan bahasamu sendiri), diikuti daftar
-                 BERNOMOR berisi HANYA field yang MASIH KOSONG pada data
-                 terkumpul (lihat data terkumpul di atas), tiap baris diakhiri
-                 tanda titik dua ":" di akhir (format isian, bukan kalimat
-                 tanya biasa). Field yang mungkin perlu ditanyakan: Nama
-                 lengkap anak, Tanggal lahir (yyyy-mm-dd), Nama ibu kandung,
-                 Jenis kelamin, Nomor WhatsApp aktif yang bisa dihubungi, dan
-                 Kategori Layanan (Periksa Sakit/Imunisasi, Konsultasi Gizi,
-                 atau Konsultasi Tumbuh Kembang).
+                 dilengkapi (mis. "Silakan lengkapi data pendaftaran berikut
+                 ya:", boleh dirangkai dengan bahasamu sendiri), diikuti
+                 daftar BERNOMOR berisi HANYA field yang MASIH KOSONG pada
+                 data terkumpul (lihat data terkumpul di atas), tiap baris
+                 diakhiri tanda titik dua ":" di akhir (format isian, bukan
+                 kalimat tanya biasa), URUTAN PERSIS berikut: Nama lengkap
+                 anak, Tempat & Tanggal Lahir (SATU baris gabungan - lihat
+                 "PENTING soal tempat & tanggal lahir" di bawah), Nama ibu
+                 kandung, Jenis kelamin, Nomor WhatsApp aktif yang bisa
+                 dihubungi, Jadwal kunjungan (tanggal dan sesi) (lihat
+                 "PENTING soal jadwal kunjungan" di bawah), Kategori Layanan
+                 (Periksa Sakit/Imunisasi, Konsultasi Gizi, atau Konsultasi
+                 Tumbuh Kembang).
+               PENTING soal tempat & tanggal lahir: walau ditampilkan SATU
+               baris ("Tempat & Tanggal Lahir:") di formulir, ini WAJIB
+               diekstrak jadi DUA field terpisah - extracted.tempat_lahir
+               (nama kota/tempat) DAN extracted.tanggal_lahir (yyyy-mm-dd) -
+               dari jawaban bebas orang tua (mis. "Jombang, 18 Januari
+               2020" -> tempat_lahir="Jombang", tanggal_lahir="2020-01-18").
+               Kalau orang tua hanya menyebutkan salah satu (mis. tanggal
+               saja tanpa tempat), isi field yang disebutkan & tanyakan
+               ulang HANYA bagian yang masih kosong, jangan mengulang
+               seluruh baris.
                PENTING soal jenis_layanan: setiap shift dokter membagi
                kuotanya jadi TIGA pool TERISOLASI - Pemeriksaan (Periksa
                Sakit/Imunisasi digabung), Konsultasi Gizi, dan Konsultasi
@@ -674,6 +822,27 @@ class AiEngineService
                - SEKALI no_hp_dikonfirmasi bernilai true, JANGAN PERNAH
                  menanyakan/menampilkan ulang konfirmasi nomor ini lagi,
                  kecuali orang tua sendiri ingin mengoreksinya.
+               PENTING soal jadwal kunjungan: field "Jadwal kunjungan
+               (tanggal dan sesi)" mengisi DUA field sekaligus -
+               extracted.shift_pilihan (pagi|sore|malam) DAN
+               extracted.tanggal_kunjungan + extracted.tanggal_kunjungan_dijawab
+               (persis aturan yang sama dengan field ini di STATE_2 dulu -
+               "secepatnya" HANYA kalau orang tua eksplisit bilang tidak ada
+               preferensi tanggal, JANGAN PERNAH mengasumsikannya sendiri;
+               normalisasikan tanggal bebas apapun ke yyyy-mm-dd; JANGAN
+               menolak/mengoreksi tanggal yang diminta, sistem yang akan
+               memvalidasi ketersediaannya setelah formulir lengkap).
+               tanggal_kunjungan DAN tanggal_kunjungan_dijawab WAJIB diisi
+               BERSAMAAN persis seperti field lain yang berpasangan di
+               prompt ini - JANGAN PERNAH tanggal_kunjungan_dijawab = true
+               dengan tanggal_kunjungan kosong. Boleh pakai jadwal praktik
+               di pesan pertama (lihat di atas) sebagai acuan saat orang tua
+               bertanya "hari apa saja bisa" - TAPI ketersediaan KUOTA
+               riil pada tanggal/sesi yang diminta baru dicek sistem setelah
+               SELURUH formulir ini lengkap, bukan di sini; kalau ternyata
+               penuh/tidak tersedia, sistem akan menawarkan alternatif pada
+               giliran berikutnya - tugasmu di sini murni menangkap
+               preferensi awal orang tua apa adanya.
                Mode satu-per-satu HANYA dipakai sebagai fallback: kalau
                setelah user membalas pesan di atas masih ada field yang
                kosong/tidak valid, baru tanyakan secara spesifik & empatik
@@ -705,13 +874,17 @@ class AiEngineService
                  secara khusus selain menangkapnya sebagai extracted.nama/
                  extracted.tanggal_lahir seperti biasa).
             4. Set ready_for_next_state true hanya jika SEMUA dari nama,
-               tanggal lahir, nama ibu kandung, jenis kelamin, no_hp, DAN
-               keluhan (dengan poli_pilihan hasil klasifikasi) sudah lengkap &
-               valid, DAN extracted.poli_disetujui = true (otomatis true
-               begitu poliklinik diklasifikasikan - lihat langkah 2), DAN
-               extracted.no_hp_dikonfirmasi = true (lihat "PENTING soal
-               no_hp" di atas), DAN extracted.jenis_layanan_dijawab = true
-               (lihat "PENTING soal jenis_layanan" di atas).
+               tempat lahir, tanggal lahir, nama ibu kandung, jenis kelamin,
+               no_hp, DAN keluhan (dengan poli_pilihan hasil klasifikasi)
+               sudah lengkap & valid, DAN extracted.poli_disetujui = true
+               (otomatis true begitu poliklinik diklasifikasikan - lihat
+               langkah 2), DAN extracted.no_hp_dikonfirmasi = true (lihat
+               "PENTING soal no_hp" di atas), DAN
+               extracted.jenis_layanan_dijawab = true (lihat "PENTING soal
+               jenis_layanan" di atas), DAN extracted.shift_pilihan terisi
+               DAN extracted.tanggal_kunjungan_dijawab = true dengan
+               tanggal_kunjungan terisi (lihat "PENTING soal jadwal
+               kunjungan" di atas).
 
             TABEL KLASIFIKASI LAYANAN - untuk saat ini bot HANYA memproses
             pendaftaran untuk Poli Spesialis Anak (BAGIAN A) - keluhan yang

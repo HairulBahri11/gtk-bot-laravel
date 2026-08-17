@@ -45,7 +45,12 @@ class WhatsappWebhookTest extends TestCase
             '*url=regpasien*' => Http::response($this->gtkOk(['no_rawat' => '2026/07/20/000001', 'no_reg' => '1'], 'Registrasi berhasil'), 200),
         ]);
 
-        // Giliran 1 -> STATE_1: data lengkap terkumpul, pasien baru didaftarkan.
+        // Giliran 1 -> STATE_1: formulir pendaftaran LENGKAP (termasuk jadwal
+        // kunjungan, dikumpulkan bersama sejak formulir - lihat stateOneAiContent())
+        // - pasien baru didaftarkan DAN slot langsung ditawarkan pada giliran
+        // yang sama (resolveSlotAndReply() dipanggil segera setelah no_rm
+        // didapat), sesi pindah ke STATE_2 tapi booking BELUM dibuat sampai
+        // slot itu dikonfirmasi terpisah.
         $this->postJson('/api/whatsapp/webhook', [
             'event' => 'message',
             'payload' => [
@@ -59,13 +64,14 @@ class WhatsappWebhookTest extends TestCase
         $this->assertSame(ChatState::Konfirmasi, $session->state);
         $this->assertSame('000099', $session->no_rm);
 
-        // Giliran 2 -> STATE_2: pilih poli + shift, konfirmasi, booking dibuat.
+        // Giliran 2 -> STATE_2: konfirmasi slot yang sudah ditawarkan giliran
+        // 1 (slot_ditawarkan) - booking baru benar-benar dibuat di sini.
         $this->postJson('/api/whatsapp/webhook', [
             'event' => 'message',
             'payload' => [
                 'from' => $this->chatId,
                 'fromMe' => false,
-                'body' => 'Tumbuh Kembang Anak, shift pagi, ya konfirmasi',
+                'body' => 'Ya, setuju',
             ],
         ])->assertOk();
 
@@ -108,14 +114,19 @@ class WhatsappWebhookTest extends TestCase
 
         Http::fake([
             'openrouter.ai/*' => Http::sequence()
-                ->push($this->openRouterResponse($this->stateOneAiContent()), 200)
-                ->push($this->openRouterResponse($this->stateTwoAiContent(['tanggal_kunjungan' => $requestedDate])), 200),
+                // Tanggal spesifik yang diminta sekarang bagian dari formulir
+                // STATE_1 itu sendiri (jadwal kunjungan) - bukan lagi
+                // override di STATE_2 seperti dulu.
+                ->push($this->openRouterResponse($this->stateOneAiContent(['tanggal_kunjungan' => $requestedDate])), 200)
+                ->push($this->openRouterResponse($this->confirmationAiContent()), 200),
             '*url=auth*' => Http::response($this->gtkOk(['token' => 'test-token']), 200),
             '*url=caripasien*' => Http::response($this->gtkFail('Data tidak ditemukan', 404), 200),
             '*url=tambahpasien*' => Http::response($this->gtkOk(['no_rkm_medis' => '000099'], 'Pasien baru berhasil didaftarkan'), 200),
             '*url=regpasien*' => Http::response($this->gtkOk(['no_rawat' => '2026/07/27/000001', 'no_reg' => '1'], 'Registrasi berhasil'), 200),
         ]);
 
+        // Giliran 1: formulir lengkap dengan tanggal spesifik -> slot untuk
+        // tanggal itu langsung ditawarkan.
         $this->postJson('/api/whatsapp/webhook', [
             'event' => 'message',
             'payload' => [
@@ -125,12 +136,13 @@ class WhatsappWebhookTest extends TestCase
             ],
         ])->assertOk();
 
+        // Giliran 2: konfirmasi slot yang ditawarkan.
         $this->postJson('/api/whatsapp/webhook', [
             'event' => 'message',
             'payload' => [
                 'from' => $this->chatId,
                 'fromMe' => false,
-                'body' => "Tumbuh Kembang Anak, shift pagi, tanggal {$requestedDate}, ya konfirmasi",
+                'body' => 'Ya, setuju',
             ],
         ])->assertOk();
 
@@ -140,10 +152,11 @@ class WhatsappWebhookTest extends TestCase
     }
 
     /**
-     * Pertanyaan tanggal kunjungan WAJIB diajukan & dijawab dulu - kalau AI
-     * keliru langsung set konfirmasi+ready_for_next_state tanpa pernah
-     * menandai tanggal_kunjungan_dijawab, server harus menolak membuat
-     * booking (bukan diam-diam pakai jadwal terdekat).
+     * Jadwal kunjungan (shift_pilihan + tanggal_kunjungan_dijawab) kini
+     * bagian dari formulir STATE_1 itu sendiri (bukan ditanyakan belakangan
+     * di STATE_2 lagi) - kalau AI keliru langsung set ready_for_next_state
+     * tanpa pernah menandai tanggal_kunjungan_dijawab, server harus menahan
+     * sesi di STATE_1 (bukan diam-diam lanjut ke resolusi slot/booking).
      */
     public function test_booking_is_not_created_until_tanggal_kunjungan_is_answered(): void
     {
@@ -153,22 +166,15 @@ class WhatsappWebhookTest extends TestCase
         $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
 
         Http::fake([
-            'openrouter.ai/*' => Http::sequence()
-                ->push($this->openRouterResponse($this->stateOneAiContent()), 200)
-                ->push($this->openRouterResponse(json_encode([
-                    'reply' => 'Baik, booking akan diproses.',
-                    'extracted' => [
-                        'poli_pilihan' => 'Tumbuh Kembang Anak',
-                        'shift_pilihan' => 'pagi',
-                        // AI keliru: konfirmasi+ready tanpa pernah menandai
-                        // tanggal_kunjungan_dijawab - server wajib menolak ini.
-                        'konfirmasi' => true,
-                    ],
-                    'ready_for_next_state' => true,
-                ])), 200),
+            'openrouter.ai/*' => Http::response($this->openRouterResponse($this->stateOneAiContent([
+                // AI keliru: field lain lengkap tapi jadwal kunjungan tidak
+                // pernah ditandai - server wajib menahan di STATE_1.
+                'shift_pilihan' => null,
+                'tanggal_kunjungan' => null,
+                'tanggal_kunjungan_dijawab' => null,
+            ])), 200),
             '*url=auth*' => Http::response($this->gtkOk(['token' => 'test-token']), 200),
             '*url=caripasien*' => Http::response($this->gtkFail('Data tidak ditemukan', 404), 200),
-            '*url=tambahpasien*' => Http::response($this->gtkOk(['no_rkm_medis' => '000099'], 'Pasien baru berhasil didaftarkan'), 200),
         ]);
 
         $this->postJson('/api/whatsapp/webhook', [
@@ -180,26 +186,18 @@ class WhatsappWebhookTest extends TestCase
             ],
         ])->assertOk();
 
-        $this->postJson('/api/whatsapp/webhook', [
-            'event' => 'message',
-            'payload' => [
-                'from' => $this->chatId,
-                'fromMe' => false,
-                'body' => 'Tumbuh Kembang Anak, shift pagi, ya konfirmasi',
-            ],
-        ])->assertOk();
-
         $session = ChatSession::query()->where('chat_id', $this->chatId)->firstOrFail();
-        $this->assertSame(ChatState::Konfirmasi, $session->state);
+        $this->assertSame(ChatState::PengumpulanData, $session->state);
+        $this->assertNull($session->no_rm);
         $this->assertSame(0, Booking::query()->count());
+        Http::assertNotSent(fn ($request) => str_contains((string) $request->url(), 'tambahpasien'));
     }
 
     /**
-     * Kejadian nyata: AI menandai tanggal_kunjungan_dijawab = true (lolos
-     * gate di atas) TAPI lupa mengisi tanggal_kunjungan itu sendiri di
-     * giliran yang sama - akibatnya booking diam-diam jatuh ke jadwal
-     * terdekat/hari ini, bukan tanggal yang sebenarnya diminta pasien.
-     * Server harus menolak & minta klarifikasi, bukan menebak "secepatnya".
+     * Kejadian nyata: AI menandai tanggal_kunjungan_dijawab = true TAPI lupa
+     * mengisi tanggal_kunjungan itu sendiri di giliran yang sama - server
+     * harus tetap menahan di STATE_1 (bukan diam-diam menebak
+     * "secepatnya"/tanggal lain).
      */
     public function test_booking_is_not_created_when_tanggal_kunjungan_value_is_missing(): void
     {
@@ -209,22 +207,14 @@ class WhatsappWebhookTest extends TestCase
         $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
 
         Http::fake([
-            'openrouter.ai/*' => Http::sequence()
-                ->push($this->openRouterResponse($this->stateOneAiContent()), 200)
-                ->push($this->openRouterResponse(json_encode([
-                    'reply' => 'Booking akan diproses.',
-                    'extracted' => [
-                        'poli_pilihan' => 'Tumbuh Kembang Anak',
-                        'shift_pilihan' => 'pagi',
-                        // Bug nyata: dijawab true tapi tanggal_kunjungan kosong.
-                        'tanggal_kunjungan_dijawab' => true,
-                        'konfirmasi' => true,
-                    ],
-                    'ready_for_next_state' => true,
-                ])), 200),
+            'openrouter.ai/*' => Http::response($this->openRouterResponse($this->stateOneAiContent([
+                'shift_pilihan' => 'pagi',
+                // Bug nyata: dijawab true tapi tanggal_kunjungan kosong.
+                'tanggal_kunjungan' => null,
+                'tanggal_kunjungan_dijawab' => true,
+            ])), 200),
             '*url=auth*' => Http::response($this->gtkOk(['token' => 'test-token']), 200),
             '*url=caripasien*' => Http::response($this->gtkFail('Data tidak ditemukan', 404), 200),
-            '*url=tambahpasien*' => Http::response($this->gtkOk(['no_rkm_medis' => '000099'], 'Pasien baru berhasil didaftarkan'), 200),
         ]);
 
         $this->postJson('/api/whatsapp/webhook', [
@@ -236,19 +226,12 @@ class WhatsappWebhookTest extends TestCase
             ],
         ])->assertOk();
 
-        $this->postJson('/api/whatsapp/webhook', [
-            'event' => 'message',
-            'payload' => [
-                'from' => $this->chatId,
-                'fromMe' => false,
-                'body' => 'Tumbuh Kembang Anak, shift pagi, tanggal 5 Agustus 2026, ya konfirmasi',
-            ],
-        ])->assertOk();
-
         $session = ChatSession::query()->where('chat_id', $this->chatId)->firstOrFail();
-        $this->assertSame(ChatState::Konfirmasi, $session->state);
+        $this->assertSame(ChatState::PengumpulanData, $session->state);
+        $this->assertNull($session->no_rm);
         $this->assertSame(0, Booking::query()->count());
         $this->assertNotTrue($session->context['tanggal_kunjungan_dijawab'] ?? null);
+        Http::assertNotSent(fn ($request) => str_contains((string) $request->url(), 'tambahpasien'));
     }
 
     /**
@@ -311,17 +294,17 @@ class WhatsappWebhookTest extends TestCase
         $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
 
         Http::fake([
-            // handleStateTwo() butuh tanggal_kunjungan_dijawab sudah true
-            // pada giliran SEBELUMNYA sebelum konfirmasi dihormati, DAN slot
-            // yang sama harus sudah pernah ditawarkan sebelum booking benar-
-            // benar dibuat (lihat slot_ditawarkan) - jadi perlu 3 giliran
-            // STATE_2 (bukan cuma 1) untuk sampai ke booking sungguhan,
-            // persis seperti pola yang sama juga berlaku di
-            // test_full_registration_and_booking_flow.
+            // Jadwal kunjungan (shift_pilihan/tanggal_kunjungan) sudah
+            // terkumpul sejak giliran 1 lewat stateOneAiContent() (bagian
+            // formulir STATE_1 - lihat AiEngineService::stateOnePrompt()
+            // "PENTING soal jadwal kunjungan"), jadi begitu giliran 2
+            // mengonfirmasi kandidat pasien & no_rm didapat,
+            // resolveSlotAndReply() LANGSUNG menawarkan slot pada giliran
+            // yang SAMA - giliran 3 tinggal mengonfirmasi slot itu (lihat
+            // slot_ditawarkan) supaya booking benar-benar dibuat. Hanya
+            // perlu 3 giliran total, bukan 5 seperti pola STATE_2 lama.
             'openrouter.ai/*' => Http::sequence()
                 ->push($this->openRouterResponse($this->stateOneAiContent(['nama' => 'Budi'])), 200)
-                ->push($this->openRouterResponse($this->confirmationAiContent()), 200)
-                ->push($this->openRouterResponse($this->stateTwoAiContent()), 200)
                 ->push($this->openRouterResponse($this->confirmationAiContent()), 200)
                 ->push($this->openRouterResponse($this->confirmationAiContent()), 200),
             '*url=auth*' => Http::response($this->gtkOk(['token' => 'test-token']), 200),
@@ -379,33 +362,15 @@ class WhatsappWebhookTest extends TestCase
         // ada -> rekam medis baru dibuat diam-diam).
         $this->assertSame(1, Patient::query()->count());
 
-        // Giliran 3-5: lanjutkan alur booking STATE_2 normal (poli+shift+
-        // tanggal, lalu dua giliran konfirmasi - lihat catatan Http::fake()
-        // di atas) - harus jatuh ke no_rm pasien LAMA, bukan pasien baru.
-        $this->postJson('/api/whatsapp/webhook', [
-            'event' => 'message',
-            'payload' => [
-                'from' => $this->chatId,
-                'fromMe' => false,
-                'body' => 'Tumbuh Kembang Anak, shift pagi, secepatnya',
-            ],
-        ])->assertOk();
-
+        // Giliran 3: konfirmasi slot yang sudah ditawarkan giliran 2 (lihat
+        // catatan Http::fake() di atas) - booking harus jatuh ke no_rm
+        // pasien LAMA, bukan pasien baru.
         $this->postJson('/api/whatsapp/webhook', [
             'event' => 'message',
             'payload' => [
                 'from' => $this->chatId,
                 'fromMe' => false,
                 'body' => 'Ya, setuju',
-            ],
-        ])->assertOk();
-
-        $this->postJson('/api/whatsapp/webhook', [
-            'event' => 'message',
-            'payload' => [
-                'from' => $this->chatId,
-                'fromMe' => false,
-                'body' => 'Ya, benar',
             ],
         ])->assertOk();
 
@@ -637,6 +602,15 @@ class WhatsappWebhookTest extends TestCase
         ]);
     }
 
+    /**
+     * Sejak jadwal kunjungan (shift_pilihan/tanggal_kunjungan) dikumpulkan
+     * bersama formulir STATE_1 (bukan lagi ditanyakan terpisah di STATE_2 -
+     * lihat AiEngineService::stateOnePrompt() "PENTING soal jadwal
+     * kunjungan"), giliran PERTAMA yang lengkap kini LANGSUNG memicu
+     * resolveSlotAndReply() (menawarkan slot), bukan cuma menyimpan data
+     * pasien - defaultnya sengaja "secepatnya" supaya cocok dengan snapshot
+     * kuota HARI INI yang diseed seedMasterData().
+     */
     protected function stateOneAiContent(array $extractedOverrides = []): string
     {
         return json_encode([
@@ -644,6 +618,7 @@ class WhatsappWebhookTest extends TestCase
             'extracted' => array_merge([
                 'nama' => 'Budi',
                 'tanggal_lahir' => '2021-01-01',
+                'tempat_lahir' => 'Jombang',
                 'nama_ibu_kandung' => 'Sari',
                 'jenis_kelamin' => 'LAKI-LAKI',
                 'no_hp' => '081234567890',
@@ -653,6 +628,9 @@ class WhatsappWebhookTest extends TestCase
                 'poli_disetujui' => true,
                 'jenis_layanan' => 'pemeriksaan',
                 'jenis_layanan_dijawab' => true,
+                'shift_pilihan' => 'pagi',
+                'tanggal_kunjungan' => 'secepatnya',
+                'tanggal_kunjungan_dijawab' => true,
             ], $extractedOverrides),
             'ready_for_next_state' => true,
         ]);
