@@ -143,9 +143,38 @@ class AntreanService
 
     public function confirmArrival(Booking $booking): Booking
     {
-        $booking->update(['status' => BookingStatus::Arrived->value]);
+        $booking->update([
+            'status' => BookingStatus::Arrived->value,
+            // "?? " membuat ini idempoten - kalau method ini entah bagaimana
+            // terpanggil dua kali untuk booking yang sama, nomor yang sudah
+            // ada TIDAK ditimpa/dimajukan lagi.
+            'no_antrean' => $booking->no_antrean ?? $this->nextQueueNumber(
+                $booking->kode_dokter, $booking->tanggal_periksa->toDateString(), $booking->shift
+            ),
+        ]);
 
         return $booking->fresh();
+    }
+
+    /**
+     * Nomor antrian kedatangan - SATU urutan gabungan per dokter+tanggal+
+     * shift, TIDAK dipisah per jenis_layanan (beda dari
+     * nextWaitlistPosition() di atas yang sengaja terisolasi per kategori) -
+     * pasien dipanggil sesuai urutan kedatangan fisik di ruang tunggu,
+     * bukan per pool kuota. Dihitung dari booking yang SUDAH berstatus
+     * Arrived (bukan Waitlist seperti nextWaitlistPosition()), karena
+     * nomor ini baru ada begitu pasien benar-benar datang.
+     */
+    protected function nextQueueNumber(string $kodeDokter, string $tanggal, Shift $shift): int
+    {
+        $max = Booking::query()
+            ->where('kode_dokter', $kodeDokter)
+            ->whereDate('tanggal_periksa', $tanggal)
+            ->where('shift', $shift->value)
+            ->where('status', BookingStatus::Arrived->value)
+            ->max('no_antrean');
+
+        return ((int) $max) + 1;
     }
 
     public function cancelBooking(Booking $booking, ?string $reason = null): Booking

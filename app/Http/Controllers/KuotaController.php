@@ -2,7 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\BookingStatus;
 use App\Jobs\SyncQuotaFromGtk;
+use App\Models\Booking;
+use App\Models\Doctor;
 use App\Models\QuotaShift;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -20,10 +23,12 @@ class KuotaController extends Controller
     {
         $user = $request->user();
         $date = $request->input('tanggal', Carbon::today()->toDateString());
+        $dokter = $request->input('dokter');
 
         $quotaShifts = QuotaShift::query()
             ->with(['doctor', 'poliklinik'])
             ->when($user->isDokter(), fn ($q) => $q->where('kode_dokter', $user->kode_dokter))
+            ->when($dokter, fn ($q) => $q->where('kode_dokter', $dokter))
             ->whereDate('tanggal', $date)
             ->orderBy('kode_poliklinik')
             ->orderByRaw("CASE shift WHEN 'pagi' THEN 1 WHEN 'sore' THEN 2 WHEN 'malam' THEN 3 ELSE 4 END")
@@ -54,9 +59,49 @@ class KuotaController extends Controller
                 'last_synced_at' => $q->last_synced_at?->toDateTimeString(),
             ]);
 
+        // Antrian kedatangan (no_antrean) - lihat AntreanService::confirmArrival()
+        // untuk bagaimana nomor ini diisi (SATU urutan gabungan per dokter+
+        // tanggal+shift, TIDAK dipisah per jenis_layanan). Hanya booking yang
+        // SUDAH datang (status Arrived) & sudah kebagian nomor yang tampil di
+        // sini - ini murni tampilan, aksi "Datang" tetap di halaman Antrean.
+        $antrean = Booking::query()
+            ->with(['patient', 'doctor', 'poliklinik'])
+            ->when($user->isDokter(), fn ($q) => $q->where('kode_dokter', $user->kode_dokter))
+            ->when($dokter, fn ($q) => $q->where('kode_dokter', $dokter))
+            ->whereDate('tanggal_periksa', $date)
+            ->where('status', BookingStatus::Arrived->value)
+            ->whereNotNull('no_antrean')
+            // no_antrean HANYA unik per dokter+shift (lihat AntreanService::
+            // nextQueueNumber()) - kalau filter "Semua Dokter" aktif, wajar
+            // ada beberapa dokter sama-sama punya #1. Urutan kedua by
+            // kode_dokter supaya hasilnya stabil/deterministik antar reload
+            // (bukan bergantung urutan baris DB yang tidak terjamin), bukan
+            // untuk memberi arti khusus pada urutan dokternya.
+            ->orderBy('no_antrean')
+            ->orderBy('kode_dokter')
+            ->get()
+            ->map(fn (Booking $b) => [
+                'id' => $b->id,
+                'no_antrean' => $b->no_antrean,
+                'nama_pasien' => $b->patient?->nama,
+                'no_rm' => $b->no_rm,
+                'poliklinik' => $b->poliklinik?->nama_poliklinik,
+                'dokter' => $b->doctor?->nama_dokter,
+                'kode_dokter' => $b->kode_dokter,
+                'shift' => $b->shift->value,
+                'jenis_layanan' => $b->jenis_layanan->label(),
+            ]);
+
+        $doctors = Doctor::query()
+            ->where('is_active', true)
+            ->orderBy('nama_dokter')
+            ->get(['kode_dokter', 'nama_dokter']);
+
         return Inertia::render('Kuota/Index', [
             'quotaShifts' => $quotaShifts,
-            'filters' => ['tanggal' => $date],
+            'antrean' => $antrean,
+            'doctors' => $doctors,
+            'filters' => ['tanggal' => $date, 'dokter' => $dokter],
         ]);
     }
 

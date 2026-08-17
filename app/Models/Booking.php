@@ -23,6 +23,7 @@ class Booking extends Model
         'jenis_layanan',
         'status',
         'waitlist_position',
+        'no_antrean',
         'buffer_shifted_count',
         'cancel_reason',
         'rescheduled_to_booking_id',
