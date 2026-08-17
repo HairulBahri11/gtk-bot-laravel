@@ -40,6 +40,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
         Route::get('/antrean', [AntreanController::class, 'index'])->name('antrean.index');
         Route::post('/antrean/{booking}/confirm-arrival', [AntreanController::class, 'confirmArrival'])->name('antrean.confirm-arrival');
+        Route::post('/antrean/{booking}/complete', [AntreanController::class, 'complete'])->name('antrean.complete');
         Route::post('/antrean/{booking}/no-show', [AntreanController::class, 'noShow'])->name('antrean.no-show');
         Route::post('/antrean/{booking}/cancel', [AntreanController::class, 'cancel'])->name('antrean.cancel');
 

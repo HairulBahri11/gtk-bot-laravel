@@ -5,6 +5,7 @@ namespace App\Services\Antrean;
 use App\Enums\BookingStatus;
 use App\Enums\JenisLayanan;
 use App\Enums\Shift;
+use App\Jobs\NotifyQueueStatusJob;
 use App\Jobs\NotifyShiftChangeJob;
 use App\Models\Booking;
 use App\Models\ChatSession;
@@ -143,6 +144,12 @@ class AntreanService
 
     public function confirmArrival(Booking $booking): Booking
     {
+        // Ditangkap SEBELUM update - dipakai di bawah untuk memutuskan
+        // apakah ini kedatangan yang benar-benar baru (perlu di-WA) atau
+        // cuma panggilan ulang idempoten (lihat "?? " di bawah, & komentar
+        // NotifyQueueStatusJob soal kenapa pesan ini tidak boleh dobel).
+        $isNewArrival = $booking->no_antrean === null;
+
         $booking->update([
             'status' => BookingStatus::Arrived->value,
             // "?? " membuat ini idempoten - kalau method ini entah bagaimana
@@ -153,7 +160,120 @@ class AntreanService
             ),
         ]);
 
+        if ($isNewArrival) {
+            NotifyQueueStatusJob::dispatch($booking->id, true);
+        }
+
         return $booking->fresh();
+    }
+
+    /**
+     * Tandai kunjungan selesai diperiksa - satu-satunya cara booking keluar
+     * dari status Arrived selain no-show/cancel. Beda dari cancelBooking()/
+     * markNoShow(), SENGAJA TIDAK melepas kuota (releaseSlot) - slotnya
+     * memang benar-benar terpakai sebagaimana mestinya, tidak ada yang
+     * perlu dibebaskan untuk pasien lain. Begitu pasien ini keluar dari
+     * pool Arrived, semua pasien LAIN yang masih menunggu di
+     * dokter+tanggal+shift yang sama otomatis maju satu posisi - mereka
+     * diberi tahu lewat notifyRemainingQueue() di bawah.
+     */
+    public function completeVisit(Booking $booking): Booking
+    {
+        if ($booking->status === BookingStatus::Selesai) {
+            return $booking;
+        }
+
+        $booking->update(['status' => BookingStatus::Selesai->value]);
+
+        $this->notifyRemainingQueue($booking);
+
+        return $booking->fresh();
+    }
+
+    /**
+     * Kirim WA posisi antrean TERBARU ke semua pasien yang masih menunggu
+     * (status Arrived) di dokter+tanggal+shift yang sama dengan booking
+     * yang baru saja Selesai - posisi mereka semua maju satu, jadi semua
+     * berhak tahu, bukan cuma yang paling depan. Di-stagger persis seperti
+     * cancelShiftAndReschedule() di bawah supaya tidak memicu banyak
+     * pengiriman WA bersamaan (risiko rate-limit WhatsApp).
+     */
+    protected function notifyRemainingQueue(Booking $completed): void
+    {
+        $waiting = Booking::query()
+            ->where('kode_dokter', $completed->kode_dokter)
+            ->whereDate('tanggal_periksa', $completed->tanggal_periksa)
+            ->where('shift', $completed->shift->value)
+            ->where('status', BookingStatus::Arrived->value)
+            ->whereNotNull('no_antrean')
+            ->get();
+
+        $staggerOffset = 0;
+
+        foreach ($waiting as $booking) {
+            $staggerOffset += random_int(
+                (int) config('gtk.notification_stagger_min_seconds'),
+                (int) config('gtk.notification_stagger_max_seconds'),
+            );
+
+            NotifyQueueStatusJob::dispatch($booking->id, false)->delay(now()->addSeconds($staggerOffset));
+        }
+    }
+
+    /**
+     * Susun teks WA posisi antrean pasien - dipakai NotifyQueueStatusJob
+     * dari DUA titik pemicu (lihat confirmArrival()/completeVisit() di
+     * atas): begitu pasien sendiri baru datang ($isArrivalConfirmation
+     * true, cuma beda kalimat pembuka), maupun begitu pasien LAIN di
+     * depannya selesai diperiksa ($isArrivalConfirmation false, posisi
+     * pasien ini otomatis maju).
+     *
+     * "Sedang dilayani" = nomor antrean TERKECIL yang statusnya masih
+     * Arrived di dokter+tanggal+shift yang sama - tidak ada status
+     * "sedang diperiksa" terpisah, jadi pasien paling depan dari yang
+     * masih menunggu itulah yang dianggap sedang dilayani. "Sisa antrean"
+     * = jumlah pasien yang masih harus selesai SETELAH yang sedang
+     * dilayani DAN SEBELUM giliran pasien ini (tidak termasuk yang sedang
+     * dilayani itu sendiri) - mis. sedang dilayani #3, pasien ini #5,
+     * sisa = 5 - 3 - 1 = 1 (cuma #4 yang perlu selesai dulu).
+     */
+    public function buildQueueStatusMessage(Booking $booking, bool $isArrivalConfirmation): string
+    {
+        $currentlyServing = Booking::query()
+            ->where('kode_dokter', $booking->kode_dokter)
+            ->whereDate('tanggal_periksa', $booking->tanggal_periksa)
+            ->where('shift', $booking->shift->value)
+            ->where('status', BookingStatus::Arrived->value)
+            ->min('no_antrean');
+
+        // Jaring pengaman - seharusnya selalu ada minimal booking ini
+        // sendiri di hasil query di atas (masih Arrived saat method ini
+        // dipanggil), tapi kalau race condition membuatnya kosong, anggap
+        // saja pasien ini yang sedang dilayani (giliran Anda sekarang).
+        $currentlyServing ??= $booking->no_antrean;
+
+        $sisa = max(0, $booking->no_antrean - $currentlyServing - 1);
+
+        $nama = $booking->patient?->nama ?? 'Ayah/Bunda';
+        $dokter = $booking->doctor?->nama_dokter ?? 'dokter';
+
+        $pembuka = $isArrivalConfirmation
+            ? "Halo Ayah/Bunda! 👋\nAdik *{$nama}* sudah tercatat *hadir* di Graha Tumbuh Kembang Anak Jombang."
+            : "Halo Ayah/Bunda! 👋\nInfo antrean untuk Adik *{$nama}* sudah diperbarui.";
+
+        if ($sisa <= 0) {
+            return "{$pembuka}\n\n"
+                ."🔔 *Giliran Anda sekarang!*\n"
+                ."🎫 Nomor Antrean: *{$booking->no_antrean}*\n"
+                ."Silakan menuju ruang periksa {$dokter} ya.\n\n"
+                .'Terima kasih 😊';
+        }
+
+        return "{$pembuka}\n\n"
+            ."🎫 Nomor Antrean Anda: *{$booking->no_antrean}*\n"
+            ."👉 Sedang Dilayani: Nomor *{$currentlyServing}*\n"
+            ."⏳ Tinggal *{$sisa}* antrean lagi sebelum giliran Anda\n\n"
+            .'Mohon menunggu di area tunggu ya, terima kasih atas kesabarannya 🙏';
     }
 
     /**

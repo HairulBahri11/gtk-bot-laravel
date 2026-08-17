@@ -28,6 +28,7 @@ class AntreanController extends Controller
         BookingStatus::Booked->value => 'Belum Datang',
         BookingStatus::Confirmed->value => 'Dikonfirmasi H-30m',
         BookingStatus::Arrived->value => 'Sudah Datang',
+        BookingStatus::Selesai->value => 'Selesai',
         BookingStatus::NoShow->value => 'No-Show',
         BookingStatus::Cancelled->value => 'Dibatalkan',
     ];
@@ -101,6 +102,13 @@ class AntreanController extends Controller
         $antrean->confirmArrival($booking);
 
         return back()->with('success', 'Kedatangan pasien dikonfirmasi.');
+    }
+
+    public function complete(Booking $booking, AntreanService $antrean): RedirectResponse
+    {
+        $antrean->completeVisit($booking);
+
+        return back()->with('success', 'Kunjungan pasien ditandai selesai.');
     }
 
     public function noShow(Booking $booking, AntreanService $antrean): RedirectResponse

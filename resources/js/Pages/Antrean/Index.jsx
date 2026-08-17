@@ -12,6 +12,7 @@ const statusStyle = {
     booked: 'bg-blue-50 text-blue-700 ring-1 ring-blue-600/20 dark:bg-blue-900/40 dark:text-blue-300 dark:ring-blue-500/20',
     confirmed: 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-600/20 dark:bg-indigo-900/40 dark:text-indigo-300 dark:ring-indigo-500/20',
     arrived: 'bg-green-50 text-green-700 ring-1 ring-green-600/20 dark:bg-green-900/40 dark:text-green-300 dark:ring-green-500/20',
+    selesai: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/20 dark:bg-emerald-900/40 dark:text-emerald-300 dark:ring-emerald-500/20',
     no_show: 'bg-red-50 text-red-700 ring-1 ring-red-600/20 dark:bg-red-900/40 dark:text-red-300 dark:ring-red-500/20',
     cancelled: 'bg-gray-100 text-gray-600 ring-1 ring-gray-400/20 dark:bg-gray-800 dark:text-gray-300 dark:ring-gray-600/30',
     rescheduled: 'bg-purple-50 text-purple-700 ring-1 ring-purple-600/20 dark:bg-purple-900/40 dark:text-purple-300 dark:ring-purple-500/20',
@@ -22,13 +23,14 @@ const statusLabel = {
     booked: 'Belum Datang',
     confirmed: 'Dikonfirmasi H-30m',
     arrived: 'Sudah Datang',
+    selesai: 'Selesai',
     no_show: 'No-Show',
     cancelled: 'Dibatalkan',
     rescheduled: 'Dijadwalkan Ulang',
 };
 
 const statusOptions = [
-    '', 'waitlist', 'booked', 'confirmed', 'arrived', 'no_show', 'cancelled', 'rescheduled',
+    '', 'waitlist', 'booked', 'confirmed', 'arrived', 'selesai', 'no_show', 'cancelled', 'rescheduled',
 ];
 
 // Palet warna chip "Layanan" - dipilih berdasarkan hash nama poliklinik
@@ -86,6 +88,10 @@ export default function AntreanIndex({ bookings, filters, funnel }) {
         router.post(route('antrean.confirm-arrival', id));
     }
 
+    function completeVisit(id) {
+        router.post(route('antrean.complete', id));
+    }
+
     function markNoShow(id) {
         if (confirm('Tandai booking ini sebagai No-Show?')) {
             router.post(route('antrean.no-show', id));
@@ -99,12 +105,12 @@ export default function AntreanIndex({ bookings, filters, funnel }) {
     }
 
     return (
-        <PreLayananLayout header="Antrean">
-            <Head title="Antrean" />
+        <PreLayananLayout header="Data Pendaftaran">
+            <Head title="Data Pendaftaran" />
 
             <div className="py-12">
                 <div className="mx-auto max-w-7xl space-y-6 sm:px-6 lg:px-8">
-                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
                         {funnel.map((f) => (
                             <button
                                 key={f.status}
@@ -327,6 +333,17 @@ export default function AntreanIndex({ bookings, filters, funnel }) {
                                                             No-Show
                                                         </SecondaryButton>
                                                     </>
+                                                )}
+                                                {b.status === 'arrived' && (
+                                                    <SecondaryButton
+                                                        onClick={() =>
+                                                            completeVisit(
+                                                                b.id,
+                                                            )
+                                                        }
+                                                    >
+                                                        Selesai
+                                                    </SecondaryButton>
                                                 )}
                                                 {[
                                                     'booked',

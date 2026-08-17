@@ -62,8 +62,8 @@ export default function KuotaIndex({ quotaShifts, antrean, doctors, filters }) {
     }
 
     return (
-        <PreLayananLayout header="Kuota Shift">
-            <Head title="Kuota Shift" />
+        <PreLayananLayout header="Kuota dan Antrean">
+            <Head title="Kuota dan Antrean" />
 
             <div className="py-12">
                 <div className="mx-auto max-w-7xl space-y-6 sm:px-6 lg:px-8">
