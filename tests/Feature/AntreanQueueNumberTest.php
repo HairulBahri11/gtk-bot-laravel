@@ -16,6 +16,7 @@ use App\Models\QuotaShift;
 use App\Models\User;
 use App\Services\Antrean\AntreanService;
 use App\Services\Reminder\KunjunganReminderService;
+use App\Services\Whatsapp\WhatsAppServiceInterface;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
@@ -612,5 +613,78 @@ class AntreanQueueNumberTest extends TestCase
         app(AntreanService::class)->cancelShiftAndReschedule('D01', now()->toDateString(), Shift::Pagi);
 
         $this->assertSame(BookingStatus::Rescheduled, $original->fresh()->status);
+    }
+
+    /**
+     * Kejadian nyata: WahaWhatsAppService::sendText() gagal (mis. sesi WA
+     * putus/WAHA restart sesaat) hanya di-log, TIDAK melempar exception -
+     * kalau job ini tidak memeriksa nilai baliknya, pesan posisi antrean
+     * hilang tanpa jejak & TIDAK PERNAH di-retry queue. NotifyQueueStatusJob
+     * WAJIB melempar exception saat sendText() mengembalikan false, supaya
+     * worker (--tries=3) otomatis mencoba lagi.
+     */
+    public function test_notify_queue_status_job_throws_when_send_fails(): void
+    {
+        $this->seedDoctor();
+        $session = $this->seedChatSessionWithPatient();
+        $booking = $this->makeBooking([
+            'chat_session_id' => $session->id,
+            'status' => BookingStatus::Arrived->value,
+            'no_antrean' => 1,
+        ]);
+
+        $failingWa = new class implements WhatsAppServiceInterface
+        {
+            public function sendText(string $to, string $message): bool
+            {
+                return false;
+            }
+
+            public function sendSeen(string $chatId): void {}
+
+            public function startTyping(string $chatId): void {}
+
+            public function stopTyping(string $chatId): void {}
+        };
+
+        $job = new NotifyQueueStatusJob($booking->id, true);
+
+        $this->expectException(\RuntimeException::class);
+        $job->handle($failingWa, app(AntreanService::class));
+    }
+
+    /**
+     * Kebalikannya - kalau sendText() berhasil (true), job WAJIB tidak
+     * melempar apa pun (jangan sampai fix di atas jadi terlalu agresif dan
+     * melempar exception padahal pengiriman sukses).
+     */
+    public function test_notify_queue_status_job_does_not_throw_when_send_succeeds(): void
+    {
+        $this->seedDoctor();
+        $session = $this->seedChatSessionWithPatient();
+        $booking = $this->makeBooking([
+            'chat_session_id' => $session->id,
+            'status' => BookingStatus::Arrived->value,
+            'no_antrean' => 1,
+        ]);
+
+        $succeedingWa = new class implements WhatsAppServiceInterface
+        {
+            public function sendText(string $to, string $message): bool
+            {
+                return true;
+            }
+
+            public function sendSeen(string $chatId): void {}
+
+            public function startTyping(string $chatId): void {}
+
+            public function stopTyping(string $chatId): void {}
+        };
+
+        $job = new NotifyQueueStatusJob($booking->id, true);
+        $job->handle($succeedingWa, app(AntreanService::class));
+
+        $this->assertTrue(true);
     }
 }

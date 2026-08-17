@@ -30,6 +30,20 @@ class NotifyQueueStatusJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
+    /**
+     * Jeda sebelum percobaan ulang ke-2/3 (worker sudah --tries=3, lihat
+     * docker-compose.yml) - kejadian nyata yang melatarbelakangi retry ini:
+     * WAHA sempat gagal terkirim tanpa jejak apa pun (lihat
+     * WahaWhatsAppService::post(), gagal cuma di-log bukan dilempar) kalau
+     * caller tidak memeriksa nilai baliknya. Jeda beberapa detik memberi
+     * waktu gangguan sesaat (mis. WAHA baru restart/sesi reconnect) pulih
+     * sebelum dicoba lagi, bukan langsung menghantam gateway yang sama
+     * detik itu juga.
+     *
+     * @var array<int, int>
+     */
+    public array $backoff = [5, 20];
+
     public function __construct(
         public int $bookingId,
         public bool $isArrivalConfirmation,
@@ -47,9 +61,18 @@ class NotifyQueueStatusJob implements ShouldQueue
             return;
         }
 
-        $wa->sendText(
+        $ok = $wa->sendText(
             $booking->chatSession->chat_id,
             $antrean->buildQueueStatusMessage($booking, $this->isArrivalConfirmation),
         );
+
+        // Beda dari kebanyakan caller sendText() lain (best-effort, gagal
+        // cuma di-log) - pesan posisi antrean ini AMAN dikirim ulang (lihat
+        // docblock kelas), jadi lempar exception di sini SUPAYA queue
+        // worker otomatis retry, bukan diam-diam hilang tanpa jejak kalau
+        // WAHA gagal sesaat.
+        if (! $ok) {
+            throw new \RuntimeException("Gagal mengirim WA posisi antrean untuk booking #{$this->bookingId} - lihat log WAHA sendText gagal untuk detail.");
+        }
     }
 }

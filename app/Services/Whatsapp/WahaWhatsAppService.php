@@ -11,9 +11,9 @@ use Illuminate\Support\Facades\Log;
  */
 class WahaWhatsAppService implements WhatsAppServiceInterface
 {
-    public function sendText(string $to, string $message): void
+    public function sendText(string $to, string $message): bool
     {
-        $this->post('/api/sendText', [
+        return $this->post('/api/sendText', [
             'chatId' => $to,
             'text' => $message,
         ], 'sendText');
@@ -41,13 +41,16 @@ class WahaWhatsAppService implements WhatsAppServiceInterface
     }
 
     /**
-     * sendSeen/startTyping/stopTyping sengaja best-effort (gagal cuma
-     * di-log, sama seperti sendText) - endpoint kosmetik seperti ini tidak
-     * boleh pernah menggagalkan/menghentikan alur balasan sesungguhnya.
+     * Gagal HANYA di-log di sini, tidak pernah melempar exception - caller
+     * yang menentukan sendiri apakah kegagalan ini boleh diabaikan
+     * (kosmetik, mis. sendSeen/startTyping/stopTyping - TIDAK ADA caller
+     * yang memeriksa nilai baliknya) atau harus ditindaklanjuti (mis.
+     * sendText dari job yang retry-safe - lihat docblock
+     * WhatsAppServiceInterface::sendText()).
      *
      * @param  array<string, mixed>  $payload
      */
-    private function post(string $endpoint, array $payload, string $label): void
+    private function post(string $endpoint, array $payload, string $label): bool
     {
         $response = Http::baseUrl(config('services.waha.url'))
             ->withHeaders(array_filter([
@@ -65,5 +68,7 @@ class WahaWhatsAppService implements WhatsAppServiceInterface
                 'body' => $response->body(),
             ]);
         }
+
+        return $response->successful();
     }
 }

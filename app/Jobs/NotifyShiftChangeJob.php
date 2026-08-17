@@ -30,6 +30,19 @@ class NotifyShiftChangeJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     /**
+     * Jeda sebelum percobaan ulang ke-2/3 (worker sudah --tries=3, lihat
+     * docker-compose.yml) - sama alasannya dengan NotifyQueueStatusJob:
+     * WAHA gagal cuma di-log (lihat WahaWhatsAppService::post()), bukan
+     * dilempar, kalau caller tidak memeriksa nilai baliknya. Retry di sini
+     * aman - ShiftNotificationLog baru ditulis SETELAH sendText() berhasil
+     * (lihat di bawah), jadi percobaan ulang tidak pernah mengira sudah
+     * terkirim padahal belum.
+     *
+     * @var array<int, int>
+     */
+    public array $backoff = [5, 20];
+
+    /**
      * @param  array<string, mixed>  $payload
      */
     public function __construct(
@@ -55,7 +68,11 @@ class NotifyShiftChangeJob implements ShouldQueue
             return;
         }
 
-        $wa->sendText($booking->chatSession->chat_id, $this->buildMessage($booking));
+        $ok = $wa->sendText($booking->chatSession->chat_id, $this->buildMessage($booking));
+
+        if (! $ok) {
+            throw new \RuntimeException("Gagal mengirim WA perubahan shift ({$this->event}) untuk booking #{$this->bookingId} - lihat log WAHA sendText gagal untuk detail.");
+        }
 
         ShiftNotificationLog::create([
             'booking_id' => $this->bookingId,
