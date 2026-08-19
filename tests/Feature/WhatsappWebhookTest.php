@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Enums\BookingStatus;
 use App\Enums\ChatState;
+use App\Enums\Shift;
 use App\Models\Booking;
 use App\Models\ChatSession;
 use App\Models\Doctor;
@@ -146,7 +147,140 @@ class WhatsappWebhookTest extends TestCase
     }
 
     /**
-     * Kejadian nyata (testing WA): dua dokter sama-sama praktik di
+     * Seed dokter dengan jadwal Pagi (08:00-09:30) DAN Sore (15:30-17:00)
+     * pada hari yang SAMA (dipakai test waktu-nyata di bawah) - beda dari
+     * seedMasterData() yang cuma satu shift, di sini sengaja dua supaya
+     * bisa menguji perpindahan otomatis Pagi->Sore begitu jam Pagi sudah
+     * lewat.
+     */
+    protected function seedMasterDataWithMultipleShiftsToday(): void
+    {
+        $poli = Poliklinik::create([
+            'kode_poliklinik' => '01',
+            'nama_poliklinik' => 'Tumbuh Kembang Anak',
+            'is_active' => true,
+        ]);
+
+        Doctor::create([
+            'kode_dokter' => 'D01',
+            'nama_dokter' => 'dr. Rina Puspita',
+            'kode_poliklinik' => $poli->kode_poliklinik,
+            'is_active' => true,
+        ]);
+
+        $todayHari = ['Monday' => 'SENIN', 'Tuesday' => 'SELASA', 'Wednesday' => 'RABU', 'Thursday' => 'KAMIS', 'Friday' => 'JUMAT', 'Saturday' => 'SABTU', 'Sunday' => 'MINGGU'][now()->format('l')];
+
+        foreach ([['pagi', '08:00', '09:30'], ['sore', '15:30', '17:00']] as [$shift, $mulai, $selesai]) {
+            DoctorSchedule::create([
+                'kode_dokter' => 'D01',
+                'kode_poliklinik' => $poli->kode_poliklinik,
+                'hari' => $todayHari,
+                'jam_mulai' => $mulai,
+                'jam_selesai' => $selesai,
+                'shift' => $shift,
+                'kuota_total' => 5,
+                'source' => 'manual',
+            ]);
+
+            QuotaShift::create([
+                'kode_dokter' => 'D01',
+                'kode_poliklinik' => $poli->kode_poliklinik,
+                'tanggal' => now()->toDateString(),
+                'shift' => $shift,
+                'kuota_total' => 5,
+                'kuota_terpakai' => 0,
+            ]);
+        }
+    }
+
+    /**
+     * Kejadian nyata (bug): pasien chat jam 12:10 minta "hari ini" dengan
+     * shift Pagi (08:00-09:30) - sesi itu SUDAH BERAKHIR 2,5 jam sebelumnya,
+     * tapi sistem lama tetap mendaftarkan ke sana. Sekarang WAJIB otomatis
+     * pindah ke sesi berikutnya hari ini (Sore) yang belum lewat jamnya,
+     * DAN pesan sukses WAJIB menjelaskan pergantian sesi ini secara
+     * eksplisit ke orang tua.
+     */
+    public function test_booking_substitutes_next_shift_today_when_requested_shift_already_passed(): void
+    {
+        $this->travelTo(now()->setTime(12, 10));
+
+        $this->seedMasterDataWithMultipleShiftsToday();
+
+        $fakeWa = new FakeWhatsAppService;
+        $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
+
+        Http::fake([
+            'openrouter.ai/*' => Http::response($this->openRouterResponse($this->stateOneAiContent([
+                'tanggal_kunjungan' => now()->toDateString(),
+                'shift_pilihan' => 'pagi',
+            ])), 200),
+            '*url=auth*' => Http::response($this->gtkOk(['token' => 'test-token']), 200),
+            '*url=caripasien*' => Http::response($this->gtkFail('Data tidak ditemukan', 404), 200),
+            '*url=tambahpasien*' => Http::response($this->gtkOk(['no_rkm_medis' => '000099'], 'Pasien baru berhasil didaftarkan'), 200),
+            '*url=regpasien*' => Http::response($this->gtkOk(['no_rawat' => '2026/08/18/000001', 'no_reg' => '1'], 'Registrasi berhasil'), 200),
+        ]);
+
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Anak saya Budi, lahir 2021-01-01, ibu Sari, keluhan demam, laki-laki, hari ini yg available',
+            ],
+        ])->assertOk();
+
+        $booking = Booking::query()->where('no_rm', '000099')->firstOrFail();
+        $this->assertSame(BookingStatus::Booked, $booking->status);
+        $this->assertSame(Shift::Sore, $booking->shift, 'sesi Pagi sudah lewat, booking wajib jatuh ke Sore');
+        $this->assertSame(now()->toDateString(), $booking->tanggal_periksa->toDateString());
+
+        $this->assertStringContainsString('sesi Pagi', $fakeWa->sent[0]['message']);
+        $this->assertStringContainsString('sudah berakhir', $fakeWa->sent[0]['message']);
+        $this->assertStringContainsString('sesi Sore', $fakeWa->sent[0]['message']);
+    }
+
+    /**
+     * Kalau SEMUA sesi hari ini sudah lewat jamnya (bukan cuma Pagi), sistem
+     * TIDAK BOLEH tetap membuat booking hari ini - harus menolak & menawarkan
+     * tanggal berikutnya (mekanisme findUpcomingDatesForShift() yang sudah
+     * ada), persis seperti kasus "tidak ada jadwal sama sekali".
+     */
+    public function test_booking_offers_alternate_date_when_all_shifts_today_already_passed(): void
+    {
+        $this->travelTo(now()->setTime(22, 0));
+
+        $this->seedMasterDataWithMultipleShiftsToday();
+
+        $fakeWa = new FakeWhatsAppService;
+        $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
+
+        Http::fake([
+            'openrouter.ai/*' => Http::response($this->openRouterResponse($this->stateOneAiContent([
+                'tanggal_kunjungan' => now()->toDateString(),
+                'shift_pilihan' => 'pagi',
+            ])), 200),
+            '*url=auth*' => Http::response($this->gtkOk(['token' => 'test-token']), 200),
+            '*url=caripasien*' => Http::response($this->gtkFail('Data tidak ditemukan', 404), 200),
+            '*url=tambahpasien*' => Http::response($this->gtkOk(['no_rkm_medis' => '000099'], 'Sukses simpan data'), 200),
+        ]);
+
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Anak saya Budi, lahir 2021-01-01, ibu Sari, keluhan demam, laki-laki, hari ini yg available',
+            ],
+        ])->assertOk();
+
+        $this->assertSame(0, Booking::query()->count());
+        $this->assertStringContainsString('tidak ada jadwal', $fakeWa->sent[0]['message']);
+        Http::assertNotSent(fn ($request) => str_contains((string) $request->url(), 'regpasien'));
+    }
+
+    /**
+     * Kejadian nyata: dua dokter sama-sama praktik di
      * poliklinik+tanggal+shift yang sama, pasien eksplisit menyebutkan
      * nama dokter di jawaban jadwal kunjungan - tapi sistem lama diam-diam
      * memilih dokter LAIN (urutan query semata) mengabaikan permintaan

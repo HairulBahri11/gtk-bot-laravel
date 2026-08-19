@@ -302,7 +302,7 @@ class AiEngineService
 
         foreach ($schedules->groupBy('kode_dokter') as $doctorSchedules) {
             $namaDokter = $doctorSchedules->first()->doctor?->nama_dokter ?? $doctorSchedules->first()->kode_dokter;
-            $lines[] = "- {$namaDokter}";
+            $lines[] = "*{$namaDokter}*";
 
             // Kelompokkan per kombinasi (shift, jam_mulai, jam_selesai) -
             // hari-hari yang punya kombinasi PERSIS SAMA digabung jadi satu
@@ -344,7 +344,7 @@ class AiEngineService
 
                 $tripletLines[] = [
                     'sortKey' => [$isoDays[0], $jamMulai],
-                    'text' => "  {$rangeLabels}: {$shiftText} {$jam}",
+                    'text' => "*{$rangeLabels} ({$shiftText})*\n{$jam}",
                 ];
             }
 
@@ -355,7 +355,7 @@ class AiEngineService
             }
         }
 
-        return implode("\n", $lines);
+        return implode("\n\n", $lines);
     }
 
     /**
@@ -719,8 +719,19 @@ class AiEngineService
                  berikut apa adanya (BUKAN sekadar contoh, JANGAN
                  diparafrase/ditambah basa-basi lain, dan JANGAN lagi
                  menyebutkan detail keluhan/empati spesifik seperti versi
-                 sebelumnya - sengaja dibuat lebih simple):
+                 sebelumnya - sengaja dibuat lebih simple). Kalimat pertama
+                 SELALU sama persis; kata kerja di kalimat kedua WAJIB
+                 menyesuaikan OTOMATIS dengan jenis_layanan yang BARU SAJA
+                 kamu tentukan di langkah ini (bukan pertanyaan/pilihan ke
+                 user, langsung sebutkan salah satu berikut apa adanya sesuai
+                 kategori):
 
+                 - Kalau jenis_layanan = "pemeriksaan":
+                 "Baik Ayah/Bunda, terimakasih atas informasinya.
+                 Untuk keluhan adik kami sarankan untuk melakukan pemeriksaan dengan dokter spesialis anak."
+
+                 - Kalau jenis_layanan = "konsultasi_gizi" atau
+                 "konsultasi_tumbuh_kembang":
                  "Baik Ayah/Bunda, terimakasih atas informasinya.
                  Untuk keluhan adik kami sarankan untuk berkonsultasi dengan dokter spesialis anak."
 
@@ -730,27 +741,28 @@ class AiEngineService
                  "Jadwal Praktek Dokter Spesialis Anak:"
 
                  LALU (paragraf/baris terpisah lagi, pesan yang SAMA) jadwal
-                 praktik dokternya - pakai PERSIS data berikut, JANGAN
-                 mengarang jam/hari di luar ini:
+                 praktik dokternya - TEMPEL PERSIS APA ADANYA data berikut,
+                 KARAKTER PER KARAKTER (termasuk tanda bold *begini*, baris
+                 kosong, dan urutannya) - JANGAN diparafrase, dirangkai
+                 ulang, ditulis ala kamu sendiri, ATAUPUN mengarang jam/hari
+                 di luar ini:
 
                  {$weeklySchedule}
 
-                 Data di atas BISA berisi LEBIH DARI SATU dokter (dipisah
-                 baris "- nama dokter") - WAJIB tampilkan SEMUA dokter yang
-                 tercantum, JANGAN memilih hanya salah satu/yang menurutmu
-                 paling relevan/paling awal saja. Format jadwal ini bebas
-                 asal jelas per dokter (nama dokter, hari praktik, sesi &
-                 jam) - boleh dirangkai ulang dengan bahasamu sendiri asal
-                 ANGKA & HARINYA PERSIS sama dengan data di atas, JANGAN
-                 diringkas/dihilangkan sebagian ATAUPUN dihilangkan salah
-                 satu dokternya. Supaya rapi kalau lebih dari satu dokter,
-                 pisahkan tiap dokter dengan baris kosong, awali tiap blok
-                 dengan nama dokter tsb sebagai judul singkat, baru diikuti
-                 daftar hari & jamnya per baris. JANGAN sertakan permintaan
-                 data pendaftaran apapun di pesan ini - cukup dua kalimat
-                 pembuka + judul + jadwal saja (boleh lebih panjang dari
-                 pesan-pesan lain karena memuat jadwal, tapi tetap tanpa
-                 basa-basi tambahan di luar itu). Kategori layanan (jenis_layanan)
+                 Data di atas sudah diformat rapi & siap kirim (nama dokter,
+                 lalu per baris hari+sesi dalam *bold*, diikuti jam
+                 praktiknya TANPA bold) - JANGAN diubah format/urutan/bold-
+                 nya sama sekali, JANGAN gabungkan kembali hari+sesi dengan
+                 jam jadi satu baris. Data BISA berisi LEBIH DARI SATU
+                 dokter - WAJIB tampilkan SEMUA dokter yang tercantum,
+                 JANGAN memilih hanya salah satu/yang menurutmu paling
+                 relevan/paling awal saja, JANGAN diringkas/dihilangkan
+                 sebagian ATAUPUN dihilangkan salah satu dokternya. JANGAN
+                 sertakan permintaan data pendaftaran apapun di pesan ini -
+                 cukup dua kalimat pembuka + judul + jadwal saja (boleh
+                 lebih panjang dari pesan-pesan lain karena memuat jadwal,
+                 tapi tetap tanpa basa-basi tambahan di luar itu). Kategori
+                 layanan (jenis_layanan)
                  TIDAK PERLU disebutkan di pesan ini lagi - cukup muncul
                  nanti di pesan konfirmasi booking akhir (lihat "PENTING
                  soal jenis_layanan" di bawah, field itu tetap otomatis

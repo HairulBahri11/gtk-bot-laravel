@@ -1146,6 +1146,13 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             return 'Mohon konfirmasi ulang jenis layanan (Periksa Sakit/Imunisasi, Konsultasi Gizi, atau Konsultasi Tumbuh Kembang).';
         }
 
+        // Ditangkap SEBELUM $shift mungkin diganti ke shift pengganti hari
+        // ini di bawah (lihat blok "hari ini" berikutnya) - dipakai nanti
+        // untuk mendeteksi apakah booking akhirnya jatuh ke shift LAIN dari
+        // yang diminta/ditemukan semula, supaya pesan sukses bisa
+        // menjelaskan pergantiannya secara eksplisit ke orang tua.
+        $originalShift = $shift;
+
         if (! $tanggalSecepatnya) {
             $requestedDate = $this->parseTanggalKunjungan($tanggalRaw);
 
@@ -1164,9 +1171,44 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
                 return 'Mohon sebutkan tanggal kunjungan yang valid, mulai hari ini atau setelahnya (mis. "20 Agustus 2026").';
             }
 
-            $schedulesForDate = $this->schedulesForDateShift($poli->kode_poliklinik, $shift, $requestedDate);
+            // Kejadian nyata (bug): pasien chat jam 12:10 minta "hari ini",
+            // lalu diam-diam terdaftar ke sesi Pagi 08:00-09:30 yang sudah
+            // berakhir - DoctorSchedule cuma template mingguan by nama hari,
+            // "cocok hari ini" TIDAK berarti jamnya masih berlaku sekarang.
+            // Kalau tanggalnya HARI INI, coba shift yang diminta DULU, lalu
+            // shift-shift SETELAHNYA hari ini secara berurutan (Pagi->Sore->
+            // Malam, lihat SHIFT_ORDER) sampai ketemu yang jam selesainya
+            // belum lewat - baru kalau semua shift hari ini habis, jatuh ke
+            // fallback "tidak ada jadwal" di bawah (yang sudah menawarkan
+            // tanggal berikutnya). Untuk tanggal MASA DEPAN, daftar kandidat
+            // cuma shift yang diminta sendiri - TIDAK ADA perubahan
+            // perilaku untuk kasus itu (jam belum relevan sama sekali).
+            $candidateShifts = [$shift];
 
-            if ($schedulesForDate->isEmpty()) {
+            if ($requestedDate->isToday()) {
+                $shiftIndex = array_search($shift, self::SHIFT_ORDER, true);
+                $candidateShifts = array_slice(self::SHIFT_ORDER, $shiftIndex);
+            }
+
+            $schedulesForDate = null;
+
+            foreach ($candidateShifts as $candidateShift) {
+                $candidates = $this->schedulesForDateShift($poli->kode_poliklinik, $candidateShift, $requestedDate);
+
+                if ($requestedDate->isToday()) {
+                    $candidates = $candidates->reject(
+                        fn (DoctorSchedule $s) => $this->isShiftOverToday($requestedDate, $s->jam_selesai)
+                    )->values();
+                }
+
+                if ($candidates->isNotEmpty()) {
+                    $schedulesForDate = $candidates;
+                    $shift = $candidateShift;
+                    break;
+                }
+            }
+
+            if (! $schedulesForDate) {
                 unset($context['tanggal_kunjungan'], $context['tanggal_kunjungan_dijawab']);
                 $session->context = $context;
 
@@ -1290,12 +1332,19 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         $session->step = null;
 
         if ($booking->status === BookingStatus::Waitlist) {
+            // Sama seperti pesan sukses di bawah - $shift bisa saja sudah
+            // diganti dari $originalShift kalau sesi semula sudah lewat
+            // jamnya hari ini (lihat blok "hari ini" di atas).
+            $pergantianSesi = $shift !== $originalShift
+                ? "Mohon maaf, sesi {$originalShift->label()} untuk hari ini sudah berakhir, sehingga Adik dialihkan ke sesi {$shift->label()}.\n\n"
+                : '';
+
             // Posisi antrean tunggu dipisah per jenis_layanan (lihat
             // AntreanService::nextWaitlistPosition()) - sertakan label
             // kategori supaya "posisi #1" tidak terbaca aneh kalau pasien
             // lain kategori berbeda kebetulan juga "posisi #1" di shift yang
             // sama persis.
-            $pesan = "Kuota {$jenis->label()} shift {$shift->label()} (pukul *{$this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai'])}*) "
+            $pesan = "{$pergantianSesi}Kuota {$jenis->label()} shift {$shift->label()} (pukul *{$this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai'])}*) "
                 ."pada *{$slot['tanggal']}* sudah penuh. Anda dimasukkan ke daftar tunggu "
                 ."{$jenis->label()} (posisi *#{$booking->waitlist_position}*). Kami akan menghubungi Anda jika ada slot tersedia.";
 
@@ -1321,7 +1370,16 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         $tanggalLabel = Carbon::parse($slot['tanggal'])->translatedFormat('d F Y');
         $jamLabel = $this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai']);
 
-        return "Terima kasih Ayah/Bunda.\n"
+        // $shift bisa saja sudah diganti dari $originalShift kalau sesi yang
+        // diminta/ditemukan semula sudah lewat jamnya hari ini (lihat blok
+        // "hari ini" di atas) - beri tahu orang tua secara eksplisit supaya
+        // pergantian sesi ini tidak cuma "kelihatan" dari tanggal/jam pada
+        // baris berikutnya, tapi benar-benar dijelaskan.
+        $pergantianSesi = $shift !== $originalShift
+            ? "Mohon maaf, sesi {$originalShift->label()} untuk hari ini sudah berakhir, sehingga Adik dijadwalkan pada sesi {$shift->label()} sebagai gantinya.\n\n"
+            : '';
+
+        return "{$pergantianSesi}Terima kasih Ayah/Bunda.\n"
             ."Adik *{$context['nama']}* telah terdaftar di jadwal {$jenis->label()} *{$namaDokter}* pada *{$tanggalLabel}*, pukul *{$jamLabel}*.\n\n"
             .'Untuk nomor antrean akan disesuaikan dengan kedatangan di *Graha Tumbuh Kembang*.'
             ."\n\n*Graha Tumbuh Kembang*\n"
@@ -1345,6 +1403,34 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         1 => 'SENIN', 2 => 'SELASA', 3 => 'RABU', 4 => 'KAMIS',
         5 => 'JUMAT', 6 => 'SABTU', 7 => 'MINGGU',
     ];
+
+    /**
+     * Urutan kronologis shift dalam satu hari - dipakai resolveSlotAndReply()
+     * untuk mencoba shift BERIKUTNYA hari ini kalau shift yang diminta/
+     * ditemukan sudah lewat jam selesainya (lihat isShiftOverToday()). Pola
+     * urutan yang sama persis dengan AntreanService::findNextOpenShiftSameDay()
+     * (app/Services/Antrean/AntreanService.php) untuk kasus cascading shift
+     * dibatalkan dokter - konsep "shift berikutnya di hari yang sama" ini
+     * sudah ada duluan di sana, cuma belum pernah dipakai untuk kasus
+     * "waktu sekarang sudah lewat jam sesi".
+     */
+    protected const SHIFT_ORDER = [Shift::Pagi, Shift::Sore, Shift::Malam];
+
+    /**
+     * DoctorSchedule adalah TEMPLATE mingguan (keyed by nama hari, bukan
+     * tanggal spesifik) - "hari ini cocok dengan pola hari X" TIDAK berarti
+     * shift itu masih berlaku SEKARANG. Kejadian nyata yang melatarbelakangi
+     * ini: pasien chat jam 12:10 minta "hari ini", lalu diam-diam terdaftar
+     * ke sesi Pagi 08:00-09:30 yang sudah berakhir 2,5 jam sebelumnya -
+     * findSlotOnDate()/findNearestSlot() dulu HANYA memeriksa kuota, tidak
+     * pernah memeriksa jam berjalan sama sekali. now()/Carbon::today() di
+     * seluruh file ini sudah otomatis Asia/Jakarta (config/app.php
+     * 'timezone'), jadi tidak perlu argumen timezone eksplisit di sini.
+     */
+    protected function isShiftOverToday(Carbon $date, string $jamSelesai): bool
+    {
+        return $date->isToday() && now()->gte($date->copy()->setTimeFromTimeString($jamSelesai));
+    }
 
     /**
      * Cari dokter + tanggal terdekat pada poliklinik & shift yang dipilih,
@@ -1394,6 +1480,17 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
             $diff = ($targetDow - $today->dayOfWeekIso + 7) % 7;
             $date = $today->copy()->addDays($diff);
+
+            // Proyeksi jatuh HARI INI tapi jam selesainya sudah lewat waktu
+            // berjalan - dorong ke occurrence MINGGU DEPAN (bukan dianggap
+            // tersedia hari ini juga bukan dibuang sepenuhnya dari daftar
+            // calon), supaya seleksi min('date') di bawah otomatis
+            // mengutamakan dokter/hari LAIN yang occurrence terdekatnya
+            // masih benar-benar akan datang (lihat isShiftOverToday()).
+            if ($this->isShiftOverToday($date, $schedule->jam_selesai)) {
+                $date = $date->copy()->addDays(7);
+            }
+
             $candidates[] = [
                 'date' => $date,
                 'kode_dokter' => $schedule->kode_dokter,
