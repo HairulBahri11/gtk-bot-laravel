@@ -7,6 +7,7 @@ use App\Enums\ChatState;
 use App\Enums\JenisLayanan;
 use App\Enums\PatientMatchVerdict;
 use App\Enums\Shift;
+use App\Models\Booking;
 use App\Models\ChatSession;
 use App\Models\Doctor;
 use App\Models\DoctorSchedule;
