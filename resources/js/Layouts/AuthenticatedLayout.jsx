@@ -77,6 +77,14 @@ export default function AuthenticatedLayout({ header, children }) {
                                         Poliklinik
                                     </NavLink>
                                 )}
+                                {user.role !== 'dokter' && (
+                                    <NavLink
+                                        href={route('dokter.index')}
+                                        active={route().current('dokter.*')}
+                                    >
+                                        Dokter
+                                    </NavLink>
+                                )}
                                 <NavLink
                                     href={route('kuota.index')}
                                     active={
@@ -222,6 +230,14 @@ export default function AuthenticatedLayout({ header, children }) {
                                 active={route().current('poliklinik.*')}
                             >
                                 Poliklinik
+                            </ResponsiveNavLink>
+                        )}
+                        {user.role !== 'dokter' && (
+                            <ResponsiveNavLink
+                                href={route('dokter.index')}
+                                active={route().current('dokter.*')}
+                            >
+                                Dokter
                             </ResponsiveNavLink>
                         )}
                         <ResponsiveNavLink

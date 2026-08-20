@@ -20,10 +20,10 @@ use Inertia\Response;
 /**
  * "Jadwal Dokter": kelola jadwal mingguan (source='manual') + status harian
  * per shift (buka/dibatalkan/delay). Dashboard ini SATU-SATUNYA sumber
- * jadwal yang dipakai untuk booking - gtk:sync-quota tidak lagi
- * menyinkronkan jadwal dari GTK sama sekali (lihat QuotaService::
- * syncFromGtk()), baris source='gtk' lama (kalau masih ada dari sebelum
- * perubahan ini) sengaja diabaikan di seluruh query booking & tidak pernah
+ * jadwal yang dipakai untuk booking - tidak ada sinkronisasi jadwal dari
+ * GTK sama sekali lagi (lihat docblock kelas QuotaService), baris
+ * source='gtk' lama (kalau masih ada dari sebelum perubahan ini) sengaja
+ * diabaikan di seluruh query booking & tidak pernah
  * bisa diedit dari sini.
  */
 class JadwalDokterController extends Controller

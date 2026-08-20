@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AntreanController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\DoctorController;
 use App\Http\Controllers\JadwalDokterController;
 use App\Http\Controllers\KuotaController;
 use App\Http\Controllers\MonitoringController;
@@ -36,7 +37,6 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     Route::prefix('pre-layanan')->group(function () {
         Route::get('/kuota', [KuotaController::class, 'index'])->name('kuota.index');
-        Route::post('/kuota/sync', [KuotaController::class, 'sync'])->name('kuota.sync');
         Route::patch('/kuota/{quotaShift}/konsultasi', [KuotaController::class, 'updateKonsultasi'])->name('kuota.update-konsultasi');
 
         Route::get('/antrean', [AntreanController::class, 'index'])->name('antrean.index');
@@ -63,6 +63,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/poliklinik', [PoliklinikController::class, 'index'])->name('poliklinik.index');
         Route::post('/poliklinik', [PoliklinikController::class, 'store'])->name('poliklinik.store');
         Route::put('/poliklinik/{poliklinik}', [PoliklinikController::class, 'update'])->name('poliklinik.update');
+
+        // Master data dokter - murni dikelola dari sini, tidak lagi
+        // disinkronkan dari API GTK (lihat docblock DoctorController).
+        Route::get('/dokter', [DoctorController::class, 'index'])->name('dokter.index');
+        Route::post('/dokter', [DoctorController::class, 'store'])->name('dokter.store');
+        Route::put('/dokter/{doctor}', [DoctorController::class, 'update'])->name('dokter.update');
     });
 
     // Tab utama 3 & 4: belum dibangun - placeholder "Segera Hadir".

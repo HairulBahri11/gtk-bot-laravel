@@ -41,8 +41,8 @@ class DashboardController extends Controller
             ->get();
 
         // "Live sync" jujur berdasarkan data - bukan sekadar hiasan: hijau
-        // hanya kalau snapshot kuota hari ini benar-benar baru disinkronkan
-        // (job gtk:sync-quota berjalan tiap 10 menit).
+        // hanya kalau snapshot kuota hari ini benar-benar baru dibangun ulang
+        // (command quota:rebuild-shifts berjalan tiap 10 menit).
         $lastSyncedAt = $quotaToday->max('last_synced_at');
         $liveSync = $lastSyncedAt && Carbon::parse($lastSyncedAt)->diffInMinutes(now()) <= 15;
 
@@ -78,7 +78,7 @@ class DashboardController extends Controller
      *
      * DoctorSchedule (template mingguan) dipakai sebagai SUMBER KEBENARAN
      * untuk poliklinik/shift APA SAJA yang aktif hari ini - bukan QuotaShift,
-     * yang cuma snapshot hasil sinkronisasi berkala (gtk:sync-quota tiap 10
+     * yang cuma snapshot hasil rebuild berkala (quota:rebuild-shifts tiap 10
      * menit) dan bisa saja belum lengkap/tertinggal untuk tanggal ini. Angka
      * used/total diambil dari QuotaShift kalau sudah tersinkron untuk
      * kombinasi dokter+shift itu; kalau belum, fallback ke kuota_total dari

@@ -93,6 +93,6 @@ class RetnoManualScheduleSeeder extends Seeder
         }
 
         $this->command?->info('Jadwal manual dr. RA Retno Wulandari, SpA berhasil di-seed (kode_dokter: '.self::KODE_DOKTER.').');
-        $this->command?->info('Jalankan `php artisan gtk:sync-quota` untuk membangun quota_shifts dari jadwal ini.');
+        $this->command?->info('Jalankan `php artisan quota:rebuild-shifts` untuk membangun quota_shifts dari jadwal ini.');
     }
 }

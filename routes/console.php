@@ -8,12 +8,12 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-// "Kuota background" - §3.1 langkah 4 PRD. gtk:sync-quota SENGAJA tidak lagi
-// dijadwalkan di sini - jadwal, kuota, poliklinik, dan dokter sekarang
-// sepenuhnya dikelola manual dari dashboard, tidak perlu sinkronisasi
-// otomatis dari GTK lagi (lihat QuotaService::syncFromGtk()). Command itu
-// masih ada & bisa dijalankan manual (`php artisan gtk:sync-quota`) kalau
-// suatu saat perlu refresh data dokter/poliklinik dari GTK.
+// "Kuota background" - §3.1 langkah 4 PRD. gtk:sync-quota TIDAK ADA LAGI
+// (dihapus, bukan cuma dinonaktifkan) - jadwal, kuota, poliklinik, dan
+// dokter sekarang sepenuhnya data master yang dikelola manual dari
+// dashboard (JadwalDokterController/PoliklinikController/DoctorController),
+// tidak ada sinkronisasi ke GTK sama sekali lagi untuk data-data ini (lihat
+// docblock kelas QuotaService).
 //
 // quota:rebuild-shifts TETAP dijadwalkan - method itu TIDAK memanggil GTK
 // sama sekali, murni proyeksi lokal dari jadwal dashboard (doctor_schedules)

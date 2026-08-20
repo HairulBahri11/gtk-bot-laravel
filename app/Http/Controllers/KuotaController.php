@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Enums\BookingStatus;
-use App\Jobs\SyncQuotaFromGtk;
 use App\Models\Booking;
 use App\Models\Doctor;
 use App\Models\QuotaShift;
@@ -105,23 +104,17 @@ class KuotaController extends Controller
         ]);
     }
 
-    public function sync(): RedirectResponse
-    {
-        SyncQuotaFromGtk::dispatch();
-
-        return back()->with('success', 'Sinkronisasi kuota sedang diproses di background. Data akan diperbarui dalam beberapa saat.');
-    }
-
     /**
      * Sesuaikan alokasi kuota konsultasi (Gizi atau Tumbuh Kembang, lihat
      * "kategori") untuk SATU snapshot harian (mis. kuota pemeriksaan sepi
      * hari ini, geser sebagian ke konsultasi) - lihat docblock migration
      * 2026_08_15_000002_split_kuota_konsultasi_gizi_tumbuh_kembang_quota_shifts
-     * untuk kenapa perubahan ini aman dari resync gtk:sync-quota berikutnya
-     * (kedua kolom alokasi ini sengaja dikecualikan dari QuotaService::
-     * rebuildQuotaShifts()). Hanya menyentuh baris QuotaShift ini - TIDAK
-     * mengubah template DoctorSchedule (itu tugas JadwalDokterController,
-     * berlaku ke minggu berikutnya, bukan hari yang sudah berjalan).
+     * untuk kenapa perubahan ini aman dari rebuild quota:rebuild-shifts
+     * berikutnya (kedua kolom alokasi ini sengaja dikecualikan dari
+     * QuotaService::rebuildQuotaShifts()). Hanya menyentuh baris QuotaShift
+     * ini - TIDAK mengubah template DoctorSchedule (itu tugas
+     * JadwalDokterController, berlaku ke minggu berikutnya, bukan hari yang
+     * sudah berjalan).
      */
     public function updateKonsultasi(Request $request, QuotaShift $quotaShift): RedirectResponse
     {

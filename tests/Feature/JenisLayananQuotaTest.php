@@ -232,11 +232,11 @@ class JenisLayananQuotaTest extends TestCase
 
     /**
      * Regresi paling penting dari fitur ini: kuota_konsultasi_tumbuh_kembang
-     * adalah ALOKASI yang admin atur manual dari dashboard - resync berkala
-     * (gtk:sync-quota, tiap 10 menit) TIDAK BOLEH menimpanya balik ke
+     * adalah ALOKASI yang admin atur manual dari dashboard - rebuild berkala
+     * (quota:rebuild-shifts, tiap 10 menit) TIDAK BOLEH menimpanya balik ke
      * default template, sama seperti status/delay_minutes/reason yang
      * sudah dilindungi lebih dulu. kuota_terpakai_konsultasi_tumbuh_kembang
-     * sebaliknya WAJIB direkomputasi tiap sync (fakta terpakai, bukan
+     * sebaliknya WAJIB direkomputasi tiap rebuild (fakta terpakai, bukan
      * target admin).
      */
     public function test_sync_protects_manual_kuota_konsultasi_but_recomputes_usage(): void

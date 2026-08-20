@@ -24,8 +24,8 @@ class DatabaseSeeder extends Seeder
     /**
      * Seed data dev/demo supaya dashboard tidak kosong saat dicek pertama
      * kali. Data master (poliklinik/dokter/jadwal) di sini hanya placeholder
-     * - jalankan `php artisan gtk:sync-quota` untuk menarik data asli begitu
-     * kredensial API GTK sudah diisi.
+     * - kelola data asli lewat dashboard (menu Poliklinik/Dokter/Jadwal
+     * Dokter), TIDAK ADA LAGI perintah sync dari GTK untuk data-data ini.
      */
     public function run(): void
     {

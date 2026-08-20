@@ -4,203 +4,32 @@ namespace App\Services\Quota;
 
 use App\Enums\JenisLayanan;
 use App\Enums\Shift;
-use App\Models\Doctor;
 use App\Models\DoctorSchedule;
-use App\Models\Poliklinik;
 use App\Models\QuotaShift;
-use App\Services\Gtk\GtkApiService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 
 /**
- * "Kuota background": sinkronisasi & pembacaan kuota real-time per shift
- * dari cache lokal (quota_shifts), bukan langsung ke API GTK setiap kali ada
- * chat masuk (§3.1 langkah 4 PRD). Sinkronisasi dijalankan berkala oleh
- * command gtk:sync-quota.
+ * "Kuota background": pembacaan kuota real-time per shift dari cache lokal
+ * (quota_shifts), bukan langsung ke API GTK setiap kali ada chat masuk
+ * (§3.1 langkah 4 PRD).
+ *
+ * TIDAK ADA LAGI sinkronisasi apa pun ke GTK di kelas ini - poliklinik,
+ * dokter, dan jadwal (doctor_schedules) semuanya murni data master yang
+ * dikelola dari dashboard (PoliklinikController, DoctorController,
+ * JadwalDokterController), bukan hasil tarik dari API GTK. Method
+ * syncFromGtk()/syncDoctors()/syncSchedules() yang dulu ada di sini sudah
+ * DIHAPUS (bukan cuma dinonaktifkan) - GtkApiService::poliklinik()/
+ * dokterAktif()/jadwalDokter() tidak pernah dipanggil lagi sama sekali dari
+ * mana pun di aplikasi ini.
+ *
+ * rebuildQuotaShifts() di bawah TETAP jalan berkala (command
+ * quota:rebuild-shifts) - method itu murni proyeksi lokal dari template
+ * doctor_schedules (100% manual) ke snapshot harian quota_shifts, TIDAK
+ * memanggil GTK sama sekali.
  */
 class QuotaService
 {
-    public function __construct(protected GtkApiService $gtk) {}
-
-    /**
-     * Tarik dokter aktif dari GTK, lalu bangun ulang snapshot kuota untuk N
-     * hari ke depan.
-     */
-    /**
-     * syncSchedules() SENGAJA tidak lagi dipanggil di sini - jadwal dokter
-     * sekarang sepenuhnya dikelola manual dari dashboard (Jadwal Dokter),
-     * bukan disinkronkan dari GTK lagi (lihat filter source='manual' di
-     * seluruh query DoctorSchedule yang menentukan booking). Menariknya
-     * tetap dari GTK cuma menambah baris source='gtk' yang tidak pernah
-     * dibaca siapa pun - sia-sia & berisiko menambah kebingungan data
-     * (kejadian nyata: baris gtk basi pernah bertabrakan dengan jadwal
-     * manual dokter yang sama, lihat docblock rebuildQuotaShifts()).
-     *
-     * rebuildQuotaShifts() TETAP dipanggil - method itu murni proyeksi
-     * lokal dari template doctor_schedules (yang sekarang 100% manual) ke
-     * snapshot harian quota_shifts, TIDAK memanggil GTK sama sekali, dan
-     * tetap wajib jalan berkala supaya tanggal-tanggal mendatang punya
-     * baris quota_shifts (dipakai hasAvailability()/reserveSlot() dkk).
-     *
-     * syncPoliklinik() DIHAPUS (bukan cuma dinonaktifkan) - poliklinik
-     * sekarang murni data master yang dikelola dari dashboard
-     * (PoliklinikController/resources/js/Pages/Poliklinik), API GTK
-     * ?url=poliklinik tidak pernah dipanggil lagi sama sekali dari mana
-     * pun. syncDoctors() TETAP dipanggil - dokter belum diminta berhenti
-     * disinkronkan dari GTK.
-     */
-    public function syncFromGtk(int $daysAhead = 60): void
-    {
-        $this->syncDoctors();
-        $this->rebuildQuotaShifts($daysAhead);
-    }
-
-    protected function syncDoctors(): void
-    {
-        $list = $this->gtk->dokterAktif()['list'] ?? [];
-
-        if (empty($list)) {
-            return;
-        }
-
-        $now = now();
-
-        // Keyed by kode_dokter untuk dedupe - API GTK dokteraktif diketahui
-        // bisa mengembalikan kode_dokter yang sama lebih dari sekali.
-        $rows = [];
-        foreach ($list as $item) {
-            $rows[$item['kode_dokter']] = [
-                'kode_dokter' => $item['kode_dokter'],
-                'nama_dokter' => $item['nama_dokter'],
-                'kode_poliklinik' => $item['kode_poliklinik'] ?? null,
-                'is_active' => true,
-                'synced_at' => $now,
-            ];
-        }
-
-        Doctor::query()->upsert(array_values($rows), ['kode_dokter'], ['nama_dokter', 'kode_poliklinik', 'is_active', 'synced_at']);
-    }
-
-    protected function syncSchedules(): void
-    {
-        /** @var array<int, string> $kodeDokterList */
-        $kodeDokterList = Doctor::query()->pluck('kode_dokter')->all();
-
-        // Dokter dengan jadwal manual (mis. dr. Retno Wulandari, SpA - GTK
-        // /jadwaldokter tidak punya data untuknya) TIDAK BOLEH ikut sync GTK
-        // sama sekali, walau kode_dokter-nya kebetulan dikenal lokal - lihat
-        // migration add_source_to_doctor_schedules_table. Baris jadwal
-        // 'manual' harus tetap satu-satunya sumber untuk dokter ini.
-        $manualKodeDokter = DoctorSchedule::query()->where('source', 'manual')->pluck('kode_dokter')->unique();
-
-        // GET /jadwaldokter hanya mengembalikan NAMA poliklinik ("poliklinik"),
-        // bukan kode-nya - resolve lewat tabel poliklinik lokal (sudah
-        // disinkronkan di syncPoliklinik(), dipanggil lebih dulu di
-        // syncFromGtk()).
-        $kodeByNama = Poliklinik::query()->pluck('kode_poliklinik', 'nama_poliklinik');
-
-        $now = now();
-        $rows = [];
-
-        foreach ($kodeDokterList as $kodeDokter) {
-            if ($manualKodeDokter->contains($kodeDokter)) {
-                continue;
-            }
-
-            try {
-                $result = $this->gtk->jadwalDokter(['kodedokter' => $kodeDokter]);
-            } catch (\Throwable $e) {
-                Log::warning('Gagal sync jadwal dokter', ['kode_dokter' => $kodeDokter, 'error' => $e->getMessage()]);
-
-                continue;
-            }
-
-            // Response bisa berupa 1 object (satu dokter) atau list.
-            $entries = isset($result['kode_dokter']) ? [$result] : ($result['list'] ?? [$result]);
-
-            foreach ($entries as $entry) {
-                $kodePoli = $entry['kode_poliklinik'] ?? $kodeByNama[$entry['poliklinik'] ?? ''] ?? null;
-
-                if (! $kodePoli) {
-                    Log::warning('Lewati jadwal dokter - poliklinik tidak dikenali', [
-                        'kode_dokter' => $entry['kode_dokter'] ?? $kodeDokter,
-                        'poliklinik' => $entry['poliklinik'] ?? null,
-                    ]);
-
-                    continue;
-                }
-
-                foreach ($entry['jadwal'] ?? [] as $jadwal) {
-                    // Lewati baris jadwal kosong/tidak valid (kuota 0 atau
-                    // jam_mulai == jam_selesai) - sejumlah dokter mengembalikan
-                    // baris placeholder seperti ini dari GTK.
-                    if ((int) ($jadwal['kuota'] ?? 0) <= 0 || $jadwal['jam_mulai'] === $jadwal['jam_selesai']) {
-                        continue;
-                    }
-
-                    $hari = $this->normalizeHari($jadwal['hari']);
-                    $shift = $this->bucketShift($jadwal['jam_mulai']);
-
-                    // Keyed by unique constraint (kode_dokter, hari, jam_mulai)
-                    // supaya duplikat dari API tidak memicu cardinality violation
-                    // pada ON CONFLICT DO UPDATE.
-                    $key = $entry['kode_dokter'].'|'.$hari.'|'.$jadwal['jam_mulai'];
-
-                    $rows[$key] = [
-                        'kode_dokter' => $entry['kode_dokter'],
-                        'hari' => $hari,
-                        'jam_mulai' => $jadwal['jam_mulai'],
-                        'kode_poliklinik' => $kodePoli,
-                        'jam_selesai' => $jadwal['jam_selesai'],
-                        'shift' => $shift->value,
-                        'kuota_total' => $jadwal['kuota'] ?? 0,
-                        // GTK tidak tahu konsep alokasi konsultasi sama sekali -
-                        // nilai ini HANYA dipakai saat baris ini pertama kali
-                        // dibuat (lihat $updateColumns di bawah, kolom alokasi
-                        // konsultasi sengaja tidak diikutkan supaya penyesuaian
-                        // dashboard tidak ditimpa balik tiap sync). Default GTK
-                        // diperlakukan sebagai Tumbuh Kembang (konsisten dengan
-                        // migration 2026_08_15_000001) - Gizi mulai dari 0.
-                        'kuota_konsultasi_gizi' => 0,
-                        'kuota_konsultasi_tumbuh_kembang' => (int) config('gtk.kuota_konsultasi_default'),
-                        'source' => 'gtk',
-                        'synced_at' => $now,
-                    ];
-                }
-            }
-        }
-
-        // Satu bulk upsert untuk seluruh jadwal, bukan updateOrCreate per baris -
-        // mengurangi ratusan round-trip ke DB (Supabase, remote) jadi satu query.
-        foreach (array_chunk(array_values($rows), 500) as $chunk) {
-            DoctorSchedule::query()->upsert(
-                $chunk,
-                ['kode_dokter', 'hari', 'jam_mulai'],
-                ['kode_poliklinik', 'jam_selesai', 'shift', 'kuota_total', 'source', 'synced_at'],
-            );
-        }
-    }
-
-    /**
-     * source='manual' WAJIB - snapshot harian hanya dibangun dari jadwal
-     * dashboard, tidak lagi dari hasil sync GTK. Ini juga menutup bug nyata
-     * yang pernah terjadi: satu kode_dokter yang punya baris manual DAN
-     * baris gtk (basi, sebelum jadwal manualnya dibuat) untuk kombinasi
-     * hari+shift yang SAMA menyebabkan tabrakan key di $rows[] di bawah -
-     * baris mana yang "menang" tidak deterministik (DoctorSchedule::all()
-     * tanpa orderBy), sampai pernah membuat kuota_total snapshot dobel
-     * (mis. 30, bukan 15) untuk dokter yang sama. Dengan filter ini, hanya
-     * SATU baris (manual) yang mungkin ada per kode_dokter+hari+shift.
-     *
-     * PUBLIC (bukan protected) supaya bisa dipanggil langsung dari command
-     * quota:rebuild-shifts (app/Console/Commands/RebuildQuotaShifts.php) -
-     * method ini SAMA SEKALI TIDAK memanggil API GTK, murni proyeksi lokal
-     * dari doctor_schedules ke quota_shifts, jadi sengaja dipisah dari
-     * gtk:sync-quota supaya tetap bisa dijadwalkan otomatis walau seluruh
-     * sinkronisasi ke GTK (poliklinik/dokter/jadwal) sudah dimatikan dari
-     * scheduler (lihat routes/console.php).
-     */
     public function rebuildQuotaShifts(int $daysAhead): void
     {
         $schedules = DoctorSchedule::where('source', 'manual')->get();
@@ -319,17 +148,6 @@ class QuotaService
         }
 
         return Shift::Malam;
-    }
-
-    /**
-     * Nilai hari 'AKHAD' dari database GTK dikonversi menjadi 'MINGGU'
-     * agar konsisten dengan enum lokal (§7.7.2 PRD).
-     */
-    protected function normalizeHari(string $hari): string
-    {
-        $hari = strtoupper($hari);
-
-        return $hari === 'AKHAD' ? 'MINGGU' : $hari;
     }
 
     public function findQuota(string $kodeDokter, string $tanggal, Shift $shift): ?QuotaShift

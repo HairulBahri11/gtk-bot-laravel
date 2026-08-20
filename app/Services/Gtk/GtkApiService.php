@@ -174,14 +174,4 @@ class GtkApiService
     {
         return $this->request('get', 'reminderkunjungan', $params);
     }
-
-    public function dokterAktif(array $params = []): array
-    {
-        return $this->request('get', 'dokteraktif', $params);
-    }
-
-    public function jadwalDokter(array $params): array
-    {
-        return $this->request('get', 'jadwaldokter', $params);
-    }
 }
