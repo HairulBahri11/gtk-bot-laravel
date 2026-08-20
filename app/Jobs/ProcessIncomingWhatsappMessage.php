@@ -111,6 +111,20 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             return;
         }
 
+        // Sama seperti tryAnswerDoctorScheduleQuestion() di atas - pertanyaan
+        // "kapan ada jadwal kosong" dari pasien yang lagi waitlist dijawab
+        // LANGSUNG dari data kuota lokal, tanpa AI, KALAU memang ada
+        // alternatif nyata. Kalau tidak ada (null), lanjut ke AI seperti
+        // biasa - fallback "hubungi admin" AI tetap berlaku wajar di situ.
+        $waitlistReply = $this->tryAnswerWaitlistAvailabilityQuestion($session, $this->text, $antrean);
+
+        if ($waitlistReply !== null) {
+            $session->save();
+            $this->reply($wa, $waitlistReply);
+
+            return;
+        }
+
         try {
             $result = $ai->interpret($session, $this->text);
         } catch (AiEngineException $e) {
@@ -175,6 +189,75 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
      * hampir semua pesan (false positive masif).
      */
     protected const GELAR_STOPWORDS = ['dr', 'drg', 'sp', 'kj', 'ra', 'a', 'm', 'ked'];
+
+    /**
+     * Kata kunci yang menandakan pasien sedang menanyakan KAPAN antrean
+     * tunggunya bisa maju/dapat jadwal - dikombinasikan dengan syarat
+     * pasien benar-benar punya booking Waitlist aktif (lihat
+     * tryAnswerWaitlistAvailabilityQuestion()) supaya tidak salah picu utk
+     * pertanyaan "kapan" yang tidak ada hubungannya sama sekali.
+     */
+    protected const WAITLIST_AVAILABILITY_KEYWORDS = ['kapan', 'kira-kira', 'kira kira', 'estimasi', 'kosong', 'update', 'gimana', 'bagaimana'];
+
+    /**
+     * Jawab pertanyaan "kapan ada jadwal kosong" dari pasien yang SEDANG
+     * menunggu di waitlist LANGSUNG dari data kuota lokal (QuotaService::
+     * suggestAlternatives(), method yang sama dipakai saat waitlist itu
+     * pertama kali dibuat di resolveSlotAndReply()) - tanpa melibatkan AI
+     * sama sekali, sama seperti tryAnswerDoctorScheduleQuestion() di atas.
+     * Alasannya sama: AI TIDAK punya data kuota real-time di luar hari
+     * ini/besok pada prompt-nya, jadi instruksi ATURAN WAJIB di
+     * AiEngineService sengaja mengarahkannya ke admin utk pertanyaan
+     * ketersediaan kuota tanggal tertentu - itu benar SELAMA memang tidak
+     * ada alternatif nyata yg bisa ditawarkan. Fungsi ini memberi jawaban
+     * PASTI (bukan tebakan AI) kalau ternyata ADA alternatif nyata,
+     * sebelum permintaan jatuh ke AI & berakhir "hubungi admin" padahal
+     * sistem sebenarnya sudah tahu jadwal terdekatnya.
+     *
+     * Hanya berlaku kalau pasien BENAR-BENAR punya booking berstatus
+     * Waitlist aktif - tanpa syarat ini, kata seperti "kapan"/"gimana" akan
+     * salah picu untuk pertanyaan lain yang tidak ada hubungannya dengan
+     * antrean tunggu sama sekali.
+     *
+     * @return string|null null kalau tidak berlaku (bukan pertanyaan
+     *                     availability, atau tidak ada waitlist aktif,
+     *                     atau memang tidak ada alternatif - biarkan AI
+     *                     yang menjawab dgn arahan ke admin seperti biasa).
+     */
+    protected function tryAnswerWaitlistAvailabilityQuestion(ChatSession $session, string $text, AntreanService $antrean): ?string
+    {
+        $normalized = Str::lower($text);
+
+        $looksLikeAvailabilityQuestion = collect(self::WAITLIST_AVAILABILITY_KEYWORDS)->contains(fn (string $kw) => Str::contains($normalized, $kw));
+
+        if (! $looksLikeAvailabilityQuestion) {
+            return null;
+        }
+
+        $booking = $session->bookings()
+            ->where('status', BookingStatus::Waitlist->value)
+            ->latest()
+            ->first();
+
+        if (! $booking) {
+            return null;
+        }
+
+        $alternatif = $antrean->offerAlternative($booking->kode_dokter, $booking->tanggal_periksa->toDateString(), $booking->jenis_layanan);
+
+        if (empty($alternatif)) {
+            return null;
+        }
+
+        $namaDokter = Doctor::query()->where('kode_dokter', $booking->kode_dokter)->value('nama_dokter') ?? $booking->kode_dokter;
+
+        $daftar = collect($alternatif)
+            ->map(fn (array $a) => Carbon::parse($a['tanggal'])->translatedFormat('d F Y').' shift '.Shift::from($a['shift'])->label())
+            ->implode(', ');
+
+        return "Untuk {$booking->jenis_layanan->label()} dengan *{$namaDokter}*, jadwal tersedia terdekat yang bisa Anda pilih: {$daftar}. "
+            .'Balas tanggal/shift yang Anda mau kalau ingin pindah ke jadwal itu, atau tetap menunggu di antrean posisi saat ini.';
+    }
 
     /**
      * Jawab pertanyaan jadwal dokter LANGSUNG dari data lokal (doctor_schedules
@@ -1346,7 +1429,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             // sama persis.
             $pesan = "{$pergantianSesi}Kuota {$jenis->label()} shift {$shift->label()} (pukul *{$this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai'])}*) "
                 ."pada *{$slot['tanggal']}* sudah penuh. Anda dimasukkan ke daftar tunggu "
-                ."{$jenis->label()} (posisi *#{$booking->waitlist_position}*). Kami akan menghubungi Anda jika ada slot tersedia.";
+                ."{$jenis->label()} (posisi *#{$booking->waitlist_position}*). Kami akan menghubungi Anda jika ada jadwal tersedia.";
 
             // §3.2 PRD: tawarkan jadwal dokter yang sama di tanggal/shift lain
             // yang kuotanya masih tersedia, supaya user tidak cuma pasrah
@@ -1716,20 +1799,31 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             // slot_ditawarkan juga wajib dibersihkan - kalau tidak, slot lama
             // yang kebetulan cocok lagi bisa lolos gerbang konfirmasi tanpa
             // pernah benar-benar ditawarkan ulang untuk kunjungan baru ini.
+            //
+            // Identitas pasien (nama/tanggal_lahir/tempat_lahir/nama_ibu_kandung/
+            // jenis_kelamin/no_hp) SENGAJA IKUT direset di sini juga - dulu
+            // dianggap "per-pasien" jadi dibiarkan menempel dari kunjungan
+            // sebelumnya (memudahkan orang tua yang booking ulang utk anak yang
+            // sama), tapi itu berisiko: satu nomor WA bisa dipakai untuk beberapa
+            // anak sekaligus (kakak-adik), jadi diam-diam memakai nama/data anak
+            // dari kunjungan SEBELUMNYA bisa salah tempel ke anak yang berbeda.
+            // STATE_1 WAJIB menanyakan ulang identitas dari nol setiap kali masuk
+            // sini, persis seperti sesi benar-benar baru.
             unset(
                 $context['poli_pilihan'], $context['poli_disetujui'],
                 $context['shift_pilihan'], $context['dokter_pilihan'],
                 $context['jenis_layanan'], $context['jenis_layanan_dijawab'],
                 $context['tanggal_kunjungan'], $context['tanggal_kunjungan_dijawab'],
                 $context['slot_ditawarkan'],
+                $context['nama'], $context['tanggal_lahir'], $context['tempat_lahir'],
+                $context['nama_ibu_kandung'], $context['jenis_kelamin'],
+                $context['no_hp'], $context['no_hp_dikonfirmasi'],
             );
             $session->context = $context;
             $session->state = ChatState::PengumpulanData->value;
             $session->step = null;
 
-            $nama = $context['nama'] ?? 'ananda';
-
-            return "Baik, akan kami bantu proses pendaftaran kunjungan baru untuk *{$nama}*.";
+            return 'Baik, akan kami bantu proses pendaftaran kunjungan baru. Mohon informasikan keluhan atau kondisi anak yang ingin dikonsultasikan.';
         }
 
         return $result['reply'];
