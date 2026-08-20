@@ -24,8 +24,8 @@ class QuotaService
     public function __construct(protected GtkApiService $gtk) {}
 
     /**
-     * Tarik master poliklinik, dokter aktif, dan jadwal dokter dari GTK,
-     * lalu bangun ulang snapshot kuota untuk N hari ke depan.
+     * Tarik dokter aktif dari GTK, lalu bangun ulang snapshot kuota untuk N
+     * hari ke depan.
      */
     /**
      * syncSchedules() SENGAJA tidak lagi dipanggil di sini - jadwal dokter
@@ -43,41 +43,17 @@ class QuotaService
      * tetap wajib jalan berkala supaya tanggal-tanggal mendatang punya
      * baris quota_shifts (dipakai hasAvailability()/reserveSlot() dkk).
      *
-     * syncPoliklinik()/syncDoctors() TETAP dipanggil - keduanya soal data
-     * master (status aktif dokter/poliklinik), bukan jadwal, dan belum
-     * diminta untuk dihentikan.
+     * syncPoliklinik() DIHAPUS (bukan cuma dinonaktifkan) - poliklinik
+     * sekarang murni data master yang dikelola dari dashboard
+     * (PoliklinikController/resources/js/Pages/Poliklinik), API GTK
+     * ?url=poliklinik tidak pernah dipanggil lagi sama sekali dari mana
+     * pun. syncDoctors() TETAP dipanggil - dokter belum diminta berhenti
+     * disinkronkan dari GTK.
      */
-    public function syncFromGtk(int $daysAhead = 14): void
+    public function syncFromGtk(int $daysAhead = 60): void
     {
-        $this->syncPoliklinik();
         $this->syncDoctors();
         $this->rebuildQuotaShifts($daysAhead);
-    }
-
-    protected function syncPoliklinik(): void
-    {
-        $list = $this->gtk->poliklinik()['list'] ?? [];
-
-        if (empty($list)) {
-            return;
-        }
-
-        $now = now();
-
-        // Keyed by kode_poliklinik supaya duplikat dari API GTK di-dedupe
-        // (Postgres ON CONFLICT DO UPDATE gagal kalau 1 batch insert punya
-        // baris dengan conflict key yang sama lebih dari sekali).
-        $rows = [];
-        foreach ($list as $item) {
-            $rows[$item['kode_poliklinik']] = [
-                'kode_poliklinik' => $item['kode_poliklinik'],
-                'nama_poliklinik' => $item['nama_poliklinik'],
-                'is_active' => true,
-                'synced_at' => $now,
-            ];
-        }
-
-        Poliklinik::query()->upsert(array_values($rows), ['kode_poliklinik'], ['nama_poliklinik', 'is_active', 'synced_at']);
     }
 
     protected function syncDoctors(): void
@@ -540,11 +516,17 @@ class QuotaService
     /**
      * quota_shifts hanya diisi untuk N hari ke depan (lihat rebuildQuotaShifts()) -
      * kalau dokter membatalkan/delay tanggal yang belum sempat di-generate
-     * (mis. baru sync semalam, atau dokter aksi untuk >14 hari ke depan),
-     * bangun barisnya di sini dari template doctor_schedules supaya
-     * cancelShift()/delayShift() tidak gagal begitu saja.
+     * (mis. baru sync semalam, atau aksi untuk tanggal di luar jendela
+     * quota:rebuild-shifts), bangun barisnya di sini dari template
+     * doctor_schedules supaya cancelShift()/delayShift() tidak gagal begitu
+     * saja.
+     *
+     * PUBLIC - juga dipakai JadwalDokterController::updateKuotaTanggal()
+     * (tombol "Ubah Kuota" per tanggal di dashboard Jadwal Dokter) supaya
+     * admin bisa mengustomisasi kuota tanggal tertentu walau tanggalnya
+     * belum sempat dibangun otomatis oleh scheduler.
      */
-    protected function resolveOrCreateQuota(string $kodeDokter, string $tanggal, Shift $shift): QuotaShift
+    public function resolveOrCreateQuota(string $kodeDokter, string $tanggal, Shift $shift): QuotaShift
     {
         $quota = $this->findQuota($kodeDokter, $tanggal, $shift);
 

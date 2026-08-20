@@ -69,6 +69,14 @@ export default function AuthenticatedLayout({ header, children }) {
                                 >
                                     Jadwal Dokter
                                 </NavLink>
+                                {user.role !== 'dokter' && (
+                                    <NavLink
+                                        href={route('poliklinik.index')}
+                                        active={route().current('poliklinik.*')}
+                                    >
+                                        Poliklinik
+                                    </NavLink>
+                                )}
                                 <NavLink
                                     href={route('kuota.index')}
                                     active={
@@ -208,6 +216,14 @@ export default function AuthenticatedLayout({ header, children }) {
                         >
                             Jadwal Dokter
                         </ResponsiveNavLink>
+                        {user.role !== 'dokter' && (
+                            <ResponsiveNavLink
+                                href={route('poliklinik.index')}
+                                active={route().current('poliklinik.*')}
+                            >
+                                Poliklinik
+                            </ResponsiveNavLink>
+                        )}
                         <ResponsiveNavLink
                             href={route('kuota.index')}
                             active={

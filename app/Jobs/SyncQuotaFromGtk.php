@@ -21,7 +21,7 @@ class SyncQuotaFromGtk implements ShouldQueue
 
     public int $timeout = 300;
 
-    public function __construct(protected int $daysAhead = 14)
+    public function __construct(protected int $daysAhead = 60)
     {
     }
 

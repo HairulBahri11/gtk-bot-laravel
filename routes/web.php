@@ -5,6 +5,7 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\JadwalDokterController;
 use App\Http\Controllers\KuotaController;
 use App\Http\Controllers\MonitoringController;
+use App\Http\Controllers\PoliklinikController;
 use App\Http\Controllers\ProfileController;
 use Illuminate\Foundation\Application;
 use Illuminate\Support\Facades\Route;
@@ -55,6 +56,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::post('/jadwal/cancel-shift', [JadwalDokterController::class, 'cancelShift'])->name('jadwal.cancel-shift');
         Route::post('/jadwal/delay-shift', [JadwalDokterController::class, 'delayShift'])->name('jadwal.delay-shift');
         Route::post('/jadwal/reopen-shift', [JadwalDokterController::class, 'reopenShift'])->name('jadwal.reopen-shift');
+        Route::post('/jadwal/update-kuota-tanggal', [JadwalDokterController::class, 'updateKuotaTanggal'])->name('jadwal.update-kuota-tanggal');
+
+        // Master data poliklinik - murni dikelola dari sini, tidak lagi
+        // disinkronkan dari API GTK (lihat docblock PoliklinikController).
+        Route::get('/poliklinik', [PoliklinikController::class, 'index'])->name('poliklinik.index');
+        Route::post('/poliklinik', [PoliklinikController::class, 'store'])->name('poliklinik.store');
+        Route::put('/poliklinik/{poliklinik}', [PoliklinikController::class, 'update'])->name('poliklinik.update');
     });
 
     // Tab utama 3 & 4: belum dibangun - placeholder "Segera Hadir".

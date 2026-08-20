@@ -184,9 +184,4 @@ class GtkApiService
     {
         return $this->request('get', 'jadwaldokter', $params);
     }
-
-    public function poliklinik(): array
-    {
-        return $this->request('get', 'poliklinik');
-    }
 }

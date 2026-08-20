@@ -50,10 +50,97 @@ function QuotaStat({ label, tersisa, total }) {
     );
 }
 
+// Editor kuota inline untuk SATU tanggal spesifik (quota_shifts), terpisah
+// dari kuota template mingguan (doctor_schedules) yang diedit lewat
+// ScheduleRow di bawah. Nilai awal diambil ulang setiap kali dibuka (bukan
+// disimpan di useForm sejak mount) supaya tidak basi kalau kartu ini
+// dipakai ulang React untuk kombinasi dokter+shift yang sama di tanggal
+// lain (statusRow/combo berubah tanpa remount, karena key hanya
+// kode_dokter+shift).
+function KuotaTanggalEditor({ combo, statusRow, tanggal, onDone }) {
+    const [data, setData] = useState({
+        kuota_total: statusRow?.kuota_total ?? combo.kuota_total,
+        kuota_konsultasi_gizi: statusRow?.kuota_konsultasi_gizi ?? combo.kuota_konsultasi_gizi,
+        kuota_konsultasi_tumbuh_kembang:
+            statusRow?.kuota_konsultasi_tumbuh_kembang ?? combo.kuota_konsultasi_tumbuh_kembang,
+    });
+    const [processing, setProcessing] = useState(false);
+    const [errors, setErrors] = useState({});
+
+    function submit(e) {
+        e.preventDefault();
+        setProcessing(true);
+        router.post(
+            route('jadwal.update-kuota-tanggal'),
+            {
+                kode_dokter: combo.kode_dokter,
+                tanggal,
+                shift: combo.shift,
+                ...data,
+            },
+            {
+                preserveScroll: true,
+                onSuccess: onDone,
+                onError: setErrors,
+                onFinish: () => setProcessing(false),
+            },
+        );
+    }
+
+    const errorMessage = errors.kuota_total || errors.kuota_konsultasi_gizi || errors.kuota_konsultasi_tumbuh_kembang;
+
+    return (
+        <form onSubmit={submit} className="space-y-2 rounded-lg bg-gray-50 p-3 dark:bg-gray-800/60">
+            <div className="grid grid-cols-3 gap-2">
+                <div>
+                    <InputLabel value="Kuota Total" className="text-xs" />
+                    <TextInput
+                        type="number"
+                        min="0"
+                        value={data.kuota_total}
+                        onChange={(e) => setData({ ...data, kuota_total: e.target.value })}
+                        className="mt-1 w-full text-sm"
+                    />
+                </div>
+                <div>
+                    <InputLabel value="Konsultasi Gizi" className="text-xs" />
+                    <TextInput
+                        type="number"
+                        min="0"
+                        value={data.kuota_konsultasi_gizi}
+                        onChange={(e) => setData({ ...data, kuota_konsultasi_gizi: e.target.value })}
+                        className="mt-1 w-full text-sm"
+                    />
+                </div>
+                <div>
+                    <InputLabel value="Konsultasi Tumbuh Kembang" className="text-xs" />
+                    <TextInput
+                        type="number"
+                        min="0"
+                        value={data.kuota_konsultasi_tumbuh_kembang}
+                        onChange={(e) => setData({ ...data, kuota_konsultasi_tumbuh_kembang: e.target.value })}
+                        className="mt-1 w-full text-sm"
+                    />
+                </div>
+            </div>
+            {errorMessage && <p className="text-xs text-red-600">{errorMessage}</p>}
+            <div className="flex gap-2">
+                <PrimaryButton type="submit" disabled={processing}>
+                    Simpan
+                </PrimaryButton>
+                <SecondaryButton type="button" disabled={processing} onClick={onDone}>
+                    Batal
+                </SecondaryButton>
+            </div>
+        </form>
+    );
+}
+
 function ShiftStatusCard({ combo, statusRow, tanggal, isDokter }) {
     const [reason, setReason] = useState('');
     const [delayMinutes, setDelayMinutes] = useState(30);
     const [busy, setBusy] = useState(false);
+    const [editingKuota, setEditingKuota] = useState(false);
 
     const status = statusRow?.status ?? 'open';
 
@@ -89,7 +176,14 @@ function ShiftStatusCard({ combo, statusRow, tanggal, isDokter }) {
                 />
             </div>
 
-            {statusRow ? (
+            {editingKuota ? (
+                <KuotaTanggalEditor
+                    combo={combo}
+                    statusRow={statusRow}
+                    tanggal={tanggal}
+                    onDone={() => setEditingKuota(false)}
+                />
+            ) : statusRow ? (
                 <div className="grid grid-cols-3 gap-2">
                     <QuotaStat
                         label="Periksa Sakit/Imunisasi tersisa"
@@ -109,7 +203,8 @@ function ShiftStatusCard({ combo, statusRow, tanggal, isDokter }) {
                 </div>
             ) : (
                 <p className="text-xs text-amber-600 dark:text-amber-400">
-                    Kuota untuk tanggal ini belum tersinkron dari jadwal - coba lagi sesaat lagi.
+                    Kuota untuk tanggal ini belum tersinkron dari jadwal - klik "Ubah Kuota" di bawah untuk
+                    membuat & mengustomisasinya sekarang, atau tunggu sinkronisasi otomatis berikutnya.
                 </p>
             )}
 
@@ -119,47 +214,54 @@ function ShiftStatusCard({ combo, statusRow, tanggal, isDokter }) {
                 </p>
             )}
 
-            <div className="flex flex-wrap items-end gap-2">
-                <div className="min-w-[10rem] flex-1">
-                    <InputLabel value="Alasan (opsional)" className="text-xs" />
-                    <TextInput
-                        value={reason}
-                        onChange={(e) => setReason(e.target.value)}
-                        className="mt-1 w-full text-sm"
-                        placeholder="mis. dokter cuti"
-                    />
-                </div>
-                <div className="w-24">
-                    <InputLabel value="Delay (mnt)" className="text-xs" />
-                    <TextInput
-                        type="number"
-                        min="1"
-                        value={delayMinutes}
-                        onChange={(e) => setDelayMinutes(e.target.value)}
-                        className="mt-1 w-full text-sm"
-                    />
-                </div>
-            </div>
+            {! editingKuota && (
+                <>
+                    <div className="flex flex-wrap items-end gap-2">
+                        <div className="min-w-[10rem] flex-1">
+                            <InputLabel value="Alasan (opsional)" className="text-xs" />
+                            <TextInput
+                                value={reason}
+                                onChange={(e) => setReason(e.target.value)}
+                                className="mt-1 w-full text-sm"
+                                placeholder="mis. dokter cuti"
+                            />
+                        </div>
+                        <div className="w-24">
+                            <InputLabel value="Delay (mnt)" className="text-xs" />
+                            <TextInput
+                                type="number"
+                                min="1"
+                                value={delayMinutes}
+                                onChange={(e) => setDelayMinutes(e.target.value)}
+                                className="mt-1 w-full text-sm"
+                            />
+                        </div>
+                    </div>
 
-            <div className="flex flex-wrap gap-2">
-                <DangerButton
-                    disabled={busy || status === 'cancelled'}
-                    onClick={() => act('jadwal.cancel-shift')}
-                >
-                    Batalkan Shift
-                </DangerButton>
-                <SecondaryButton
-                    disabled={busy || status === 'cancelled'}
-                    onClick={() => act('jadwal.delay-shift')}
-                >
-                    Lapor Delay
-                </SecondaryButton>
-                {status !== 'open' && (
-                    <SecondaryButton disabled={busy} onClick={() => act('jadwal.reopen-shift')}>
-                        Buka Kembali
-                    </SecondaryButton>
-                )}
-            </div>
+                    <div className="flex flex-wrap gap-2">
+                        <DangerButton
+                            disabled={busy || status === 'cancelled'}
+                            onClick={() => act('jadwal.cancel-shift')}
+                        >
+                            Batalkan Shift
+                        </DangerButton>
+                        <SecondaryButton
+                            disabled={busy || status === 'cancelled'}
+                            onClick={() => act('jadwal.delay-shift')}
+                        >
+                            Lapor Delay
+                        </SecondaryButton>
+                        {status !== 'open' && (
+                            <SecondaryButton disabled={busy} onClick={() => act('jadwal.reopen-shift')}>
+                                Buka Kembali
+                            </SecondaryButton>
+                        )}
+                        <SecondaryButton disabled={busy} onClick={() => setEditingKuota(true)}>
+                            Ubah Kuota
+                        </SecondaryButton>
+                    </div>
+                </>
+            )}
         </div>
     );
 }

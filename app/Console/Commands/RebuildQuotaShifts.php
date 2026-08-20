@@ -18,10 +18,18 @@ use Illuminate\Console\Command;
  * command ini berjalan berkala, tanggal-tanggal mendatang tidak akan pernah
  * punya baris quota_shifts (dipakai QuotaService::hasAvailability() dkk
  * saat booking).
+ *
+ * Default --days dinaikkan dari 14 ke 60 - dengan 14 hari, memilih tanggal
+ * >2 minggu ke depan di dashboard Jadwal Dokter (mis. ?tanggal=...) selalu
+ * menampilkan "Kuota untuk tanggal ini belum tersinkron" karena baris
+ * quota_shifts-nya memang belum pernah dibangun. Tanggal di luar jendela
+ * ini (jarang, tapi bisa terjadi) tetap ditangani lewat
+ * QuotaService::resolveOrCreateQuota() (dipanggil on-demand oleh tombol
+ * "Ubah Kuota" per tanggal), bukan cuma mengandalkan angka ini besar.
  */
 class RebuildQuotaShifts extends Command
 {
-    protected $signature = 'quota:rebuild-shifts {--days=14 : Jumlah hari ke depan yang dibangun ulang}';
+    protected $signature = 'quota:rebuild-shifts {--days=60 : Jumlah hari ke depan yang dibangun ulang}';
 
     protected $description = 'Bangun ulang snapshot kuota harian dari jadwal dashboard (tanpa memanggil API GTK)';
 

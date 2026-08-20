@@ -241,6 +241,55 @@ class JadwalDokterController extends Controller
     }
 
     /**
+     * Kustomisasi kuota untuk SATU tanggal spesifik (quota_shifts), berbeda
+     * dari update()/store() di atas yang mengubah TEMPLATE mingguan
+     * (doctor_schedules - berlaku ke semua tanggal berikutnya yang jatuh di
+     * hari itu). Dipakai tombol "Ubah Kuota" di kartu "Status Shift".
+     *
+     * Baris quota_shifts utk tanggal ini mungkin belum ada sama sekali kalau
+     * tanggalnya di luar jendela quota:rebuild-shifts (lihat komentar
+     * --days di RebuildQuotaShifts) - resolveOrCreateQuota() membangunnya
+     * on-demand dari template, sama seperti cancelShift()/delayShift().
+     */
+    public function updateKuotaTanggal(Request $request, QuotaService $quota): RedirectResponse
+    {
+        $data = $request->validate([
+            'kode_dokter' => ['required', 'string', Rule::exists('doctors', 'kode_dokter')],
+            'tanggal' => ['required', 'date'],
+            'shift' => ['required', Rule::in(['pagi', 'sore', 'malam'])],
+            'kuota_total' => ['required', 'integer', 'min:0'],
+            'kuota_konsultasi_gizi' => ['required', 'integer', 'min:0'],
+            'kuota_konsultasi_tumbuh_kembang' => ['required', 'integer', 'min:0', $this->konsultasiGabunganRule($request)],
+        ]);
+
+        $this->authorizeDokter($request->user(), $data['kode_dokter']);
+
+        try {
+            $quotaShift = $quota->resolveOrCreateQuota($data['kode_dokter'], $data['tanggal'], Shift::from($data['shift']));
+        } catch (\RuntimeException $e) {
+            return back()->with('error', $e->getMessage());
+        }
+
+        // Tidak boleh diturunkan di bawah yang sudah benar-benar terpakai/
+        // dibooking - beda dari kuota.update-konsultasi (KuotaController)
+        // yang membatasi lewat validasi "max" ke kuota_total statis, di sini
+        // kuota_total-nya sendiri yang berubah jadi wajib dicek eksplisit.
+        if ($data['kuota_total'] < $quotaShift->kuota_terpakai
+            || $data['kuota_konsultasi_gizi'] < $quotaShift->kuota_terpakai_konsultasi_gizi
+            || $data['kuota_konsultasi_tumbuh_kembang'] < $quotaShift->kuota_terpakai_konsultasi_tumbuh_kembang) {
+            return back()->with('error', 'Kuota tidak boleh dikurangi di bawah jumlah yang sudah terpakai/dibooking untuk tanggal ini.');
+        }
+
+        $quotaShift->update([
+            'kuota_total' => $data['kuota_total'],
+            'kuota_konsultasi_gizi' => $data['kuota_konsultasi_gizi'],
+            'kuota_konsultasi_tumbuh_kembang' => $data['kuota_konsultasi_tumbuh_kembang'],
+        ]);
+
+        return back()->with('success', 'Kuota untuk tanggal ini diperbarui.');
+    }
+
+    /**
      * @return array{kode_dokter: string, tanggal: string, shift: string, delay_minutes?: int, reason: ?string}
      */
     protected function validateShiftAction(Request $request, bool $withDelay = false): array

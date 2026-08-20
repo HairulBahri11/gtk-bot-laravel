@@ -306,7 +306,7 @@ class AiEngineService
 
             // Kelompokkan per kombinasi (shift, jam_mulai, jam_selesai) -
             // hari-hari yang punya kombinasi PERSIS SAMA digabung jadi satu
-            // baris (direntang kalau berurutan, mis. "Senin - Jumat"),
+            // baris (direntang kalau berurutan, mis. "Senin s.d. Jumat"),
             // supaya jadwal yang jamnya beda-beda tiap hari (lihat data
             // nyata dr. Retno: Sabtu jam pagi & sore-nya beda dari hari
             // kerja) tetap terpisah otomatis, bukan dipaksa satu rentang.
@@ -334,12 +334,12 @@ class AiEngineService
                 $rangeLabels = collect($this->collapseConsecutiveDays($isoDays))
                     ->map(function (array $range) use ($hariLabel) {
                         return count($range) > 1
-                            ? "{$hariLabel[$range[0]]} - {$hariLabel[end($range)]}"
+                            ? "{$hariLabel[$range[0]]} s.d. {$hariLabel[end($range)]}"
                             : $hariLabel[$range[0]];
                     })
                     ->implode(', ');
 
-                $jam = substr($jamMulai, 0, 5).' - '.substr($jamSelesai, 0, 5);
+                $jam = $this->formatJamWib($jamMulai).' s.d. '.$this->formatJamWib($jamSelesai);
                 $shiftText = $shiftLabel[$shiftValue] ?? $shiftValue;
 
                 $tripletLines[] = [
@@ -362,7 +362,7 @@ class AiEngineService
      * Ubah daftar angka hari ISO (1=Senin..7=Minggu) jadi kelompok-kelompok
      * hari BERURUTAN, mis. [1,2,3,4,5,6] -> [[1,2,3,4,5,6]], [1,2,4] ->
      * [[1,2],[4]] - dipakai weeklyScheduleSummaryForPoliAnak() untuk
-     * merentang "Senin - Sabtu" alih-alih daftar hari satu-satu.
+     * merentang "Senin s.d. Sabtu" alih-alih daftar hari satu-satu.
      *
      * @param  array<int, int>  $isoDays  WAJIB sudah terurut & unik.
      * @return array<int, array<int, int>>
@@ -386,6 +386,17 @@ class AiEngineService
         }
 
         return $ranges;
+    }
+
+    /**
+     * "08:00:00"/"08:00" -> "08.00 WIB" - format jam sesuai EYD ("s.d.",
+     * titik sebagai pemisah jam:menit, akhiran WIB) dipakai
+     * weeklyScheduleSummaryForPoliAnak() per permintaan format pesan
+     * jadwal ke pasien (bukan "-"/"s/d" seperti sebelumnya).
+     */
+    protected function formatJamWib(string $jam): string
+    {
+        return str_replace(':', '.', substr($jam, 0, 5)).' WIB';
     }
 
     protected function buildSystemPrompt(ChatSession $session): string
