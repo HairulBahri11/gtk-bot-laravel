@@ -454,6 +454,62 @@ class AntreanService
     }
 
     /**
+     * Pindahkan booking WAITLIST ke tanggal/shift ALTERNATIF yang dipilih
+     * pasien sendiri (lihat offerAlternative() - dipanggil dari
+     * ProcessIncomingWhatsappMessage::tryConfirmWaitlistAlternative() saat
+     * pasien mengonfirmasi salah satu alternatif yang ditawarkan). Beda
+     * dari promoteWaitlist() (yang mempromosikan ke tanggal/shift SAMA
+     * seperti tempat menunggu semula, dipicu server saat kuota di situ
+     * terbuka) - di sini pasien sendiri yang memilih tanggal/shift BARU,
+     * jadi kuota tujuan WAJIB diverifikasi ulang di sini (bisa saja sudah
+     * penuh lagi sejak ditawarkan - pola sama seperti createBooking()).
+     *
+     * Return null kalau kuota tujuan ternyata sudah tidak tersedia lagi
+     * (race condition, atau booking bukan/bukan lagi status Waitlist) -
+     * caller WAJIB memberi tahu pasien apa adanya, JANGAN PERNAH mengklaim
+     * sukses tanpa method ini benar-benar mengembalikan Booking baru
+     * (kejadian nyata: AI sempat mengarang balasan "berhasil dipindah"
+     * padahal tidak ada perubahan data sama sekali - lihat komentar di
+     * tryConfirmWaitlistAlternative()).
+     */
+    public function moveWaitlistToAlternative(Booking $booking, string $tanggal, Shift $shift): ?Booking
+    {
+        if ($booking->status !== BookingStatus::Waitlist) {
+            return null;
+        }
+
+        $tanggal = Carbon::parse($tanggal)->toDateString();
+        $jenis = $booking->jenis_layanan;
+
+        return DB::transaction(function () use ($booking, $tanggal, $shift, $jenis) {
+            if (! $this->quota->hasAvailability($booking->kode_dokter, $tanggal, $shift, $jenis)) {
+                return null;
+            }
+
+            $response = $this->gtk->regPasien([
+                'no_rm' => $booking->no_rm,
+                'kodepoli' => $booking->kode_poliklinik,
+                'kodedokter' => $booking->kode_dokter,
+                'tanggalperiksa' => $tanggal,
+            ]);
+
+            $booking->update([
+                'tanggal_periksa' => $tanggal,
+                'shift' => $shift->value,
+                'status' => BookingStatus::Booked->value,
+                'no_rawat' => $response['no_rawat'] ?? null,
+                'no_reg' => $response['no_reg'] ?? null,
+                'waitlist_position' => null,
+            ]);
+
+            $this->quota->reserveSlot($booking->kode_dokter, $tanggal, $shift, $jenis);
+            $this->reminder->upsertForBooking($booking);
+
+            return $booking->fresh();
+        });
+    }
+
+    /**
      * Perintah dokter (WA) atau dashboard: batalkan shift pada tanggal
      * tertentu. Semua booking booked/confirmed di kombinasi dokter+tanggal+
      * shift ini otomatis digeser ke shift berikutnya di hari yang sama

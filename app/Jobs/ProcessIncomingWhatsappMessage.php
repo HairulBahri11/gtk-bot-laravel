@@ -91,6 +91,22 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
         $this->autoFillPhoneFromChatId($session);
 
+        // Kalau pasien punya tawaran alternatif waitlist yang masih pending
+        // (lihat offerClosestAlternative()), cek DULU apakah pesan ini
+        // konfirmasi atasnya - WAJIB deterministik & didahulukan dari
+        // pengecekan lain di bawah, TIDAK PERNAH lewat AI (kejadian nyata:
+        // AI sempat mengarang balasan "berhasil dipindah" padahal booking
+        // sama sekali tidak berubah - lihat docblock
+        // tryConfirmWaitlistAlternative()).
+        $confirmReply = $this->tryConfirmWaitlistAlternative($session, $this->text, $antrean);
+
+        if ($confirmReply !== null) {
+            $session->save();
+            $this->reply($wa, $confirmReply);
+
+            return;
+        }
+
         // Pertanyaan jadwal dokter (mis. "dr. Retno hari ini jadwal jam
         // berapa?") dijawab LANGSUNG dari data doctor_schedules/quota_shifts
         // di sini - TIDAK PERNAH diserahkan ke AI. Kejadian nyata: walau
@@ -243,20 +259,18 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             return null;
         }
 
-        $alternatif = $antrean->offerAlternative($booking->kode_dokter, $booking->tanggal_periksa->toDateString(), $booking->jenis_layanan);
+        $context = $session->context ?? [];
+        $fragment = $this->offerClosestAlternative(
+            $session, $context, $booking, $booking->tanggal_periksa->toDateString(), $booking->jenis_layanan, $antrean
+        );
 
-        if (empty($alternatif)) {
+        if ($fragment === '') {
             return null;
         }
 
         $namaDokter = Doctor::query()->where('kode_dokter', $booking->kode_dokter)->value('nama_dokter') ?? $booking->kode_dokter;
 
-        $daftar = collect($alternatif)
-            ->map(fn (array $a) => Carbon::parse($a['tanggal'])->translatedFormat('d F Y').' shift '.Shift::from($a['shift'])->label())
-            ->implode(', ');
-
-        return "Untuk {$booking->jenis_layanan->label()} dengan *{$namaDokter}*, jadwal tersedia terdekat yang bisa Anda pilih: {$daftar}. "
-            .'Balas tanggal/shift yang Anda mau kalau ingin pindah ke jadwal itu, atau tetap menunggu di antrean posisi saat ini.';
+        return "Untuk {$booking->jenis_layanan->label()} dengan *{$namaDokter}*, berikut info antrean Anda saat ini.{$fragment}";
     }
 
     /**
@@ -1427,31 +1441,24 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             // kategori supaya "posisi #1" tidak terbaca aneh kalau pasien
             // lain kategori berbeda kebetulan juga "posisi #1" di shift yang
             // sama persis.
+            // §3.2 PRD: tawarkan LANGSUNG (bukan menunggu pasien bertanya
+            // duluan) satu jadwal alternatif TERDEKAT dari dokter yang sama,
+            // supaya pasien tinggal balas "Ya" - lihat offerClosestAlternative().
+            // Dihitung DULU (bukan setelah kalimat penutup) supaya kalimat
+            // penutup bisa menyesuaikan - "kami akan menghubungi Anda" janggal
+            // kalau di baris berikutnya langsung ada tawaran konkret.
+            $tawaran = $this->offerClosestAlternative($session, $context, $booking, $slot['tanggal'], $jenis, $antrean);
+
+            $penutup = $tawaran === ''
+                ? ' Kami akan menghubungi Anda jika ada jadwal tersedia.'
+                : '';
+
             $pesan = "{$pergantianSesi}Kuota {$jenis->label()} shift {$shift->label()} (pukul *{$this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai'])}*) "
                 ."pada *{$slot['tanggal']}* sudah penuh. Anda dimasukkan ke daftar tunggu "
-                ."{$jenis->label()} (posisi *#{$booking->waitlist_position}*). Kami akan menghubungi Anda jika ada jadwal tersedia.";
-
-            // §3.2 PRD: tawarkan jadwal dokter yang sama di tanggal/shift lain
-            // yang kuotanya masih tersedia, supaya user tidak cuma pasrah
-            // menunggu antrean - AntreanService::offerAlternative() sebelumnya
-            // sudah ada tapi belum pernah dipanggil dari alur booking.
-            $alternatif = $antrean->offerAlternative($slot['kode_dokter'], $slot['tanggal'], $jenis);
-
-            if (! empty($alternatif)) {
-                $daftar = collect($alternatif)
-                    ->map(fn (array $a) => $a['tanggal'].' shift '.Shift::from($a['shift'])->label())
-                    ->implode(', ');
-
-                $pesan .= "\n\nAtau kalau ingin lebih cepat, ada jadwal tersedia di: {$daftar}. "
-                    .'Balas tanggal/shift yang Anda mau kalau ingin pindah ke jadwal itu.';
-            }
+                ."{$jenis->label()} (posisi *#{$booking->waitlist_position}*).{$penutup}{$tawaran}";
 
             return $pesan;
         }
-
-        $namaDokter = Doctor::query()->where('kode_dokter', $slot['kode_dokter'])->value('nama_dokter') ?? $slot['kode_dokter'];
-        $tanggalLabel = Carbon::parse($slot['tanggal'])->translatedFormat('d F Y');
-        $jamLabel = $this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai']);
 
         // $shift bisa saja sudah diganti dari $originalShift kalau sesi yang
         // diminta/ditemukan semula sudah lewat jamnya hari ini (lihat blok
@@ -1462,11 +1469,167 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             ? "Mohon maaf, sesi {$originalShift->label()} untuk hari ini sudah berakhir, sehingga Adik dijadwalkan pada sesi {$shift->label()} sebagai gantinya.\n\n"
             : '';
 
+        return $this->buildBookingConfirmationMessage($booking, $slot['jam_mulai'], $slot['jam_selesai'], $pergantianSesi);
+    }
+
+    /**
+     * Pesan konfirmasi booking BERHASIL - satu-satunya tempat teksnya
+     * dirumuskan, dipakai baik saat booking baru langsung dapat slot
+     * (resolveSlotAndReply() di atas) maupun saat booking WAITLIST berhasil
+     * dipindah ke alternatif yang dikonfirmasi pasien
+     * (tryConfirmWaitlistAlternative() di bawah) - supaya kedua jalur
+     * menghasilkan pesan yang PERSIS SAMA, bukan dua template yang gampang
+     * divergen kalau salah satunya diubah tanpa yang lain.
+     */
+    protected function buildBookingConfirmationMessage(Booking $booking, string $jamMulai, string $jamSelesai, string $pergantianSesi = ''): string
+    {
+        $booking->loadMissing(['patient', 'doctor']);
+
+        $namaPasien = $booking->patient?->nama ?? '-';
+        $namaDokter = $booking->doctor?->nama_dokter ?? $booking->kode_dokter;
+        $tanggalLabel = Carbon::parse($booking->tanggal_periksa)->translatedFormat('d F Y');
+        $jamLabel = $this->formatJamRange($jamMulai, $jamSelesai);
+
         return "{$pergantianSesi}Terima kasih Ayah/Bunda.\n"
-            ."Adik *{$context['nama']}* telah terdaftar di jadwal {$jenis->label()} *{$namaDokter}* pada *{$tanggalLabel}*, pukul *{$jamLabel}*.\n\n"
+            ."Adik *{$namaPasien}* telah terdaftar di jadwal {$booking->jenis_layanan->label()} *{$namaDokter}* pada *{$tanggalLabel}*, pukul *{$jamLabel}*.\n\n"
             .'Untuk nomor antrean akan disesuaikan dengan kedatangan di *Graha Tumbuh Kembang*.'
             ."\n\n*Graha Tumbuh Kembang*\n"
             .'Solusi Kesehatan & Tumbuh Kembang Anak';
+    }
+
+    /**
+     * Tawarkan SATU alternatif TERDEKAT (bukan daftar panjang) dari dokter
+     * yang sama, plus simpan context['alternatif_ditawarkan'] =
+     * "tanggal|shift|booking_id" supaya balasan afirmatif ("Ya"/"setuju"/dst,
+     * lihat tryConfirmWaitlistAlternative()) pada giliran berikutnya bisa
+     * langsung memindahkan booking waitlist ini TANPA pasien perlu mengetik
+     * ulang tanggal+shift lengkap. Sengaja HANYA satu alternatif (bukan
+     * daftar) supaya "Ya" tidak ambigu alternatif mana yang dimaksud.
+     *
+     * Dipanggil dari DUA tempat (resolveSlotAndReply() saat waitlist BARU
+     * dibuat, & tryAnswerWaitlistAvailabilityQuestion() saat pasien
+     * bertanya belakangan) - disatukan di sini supaya keduanya konsisten
+     * & sama-sama menyetel flag yang sama.
+     *
+     * @return string fragment pesan (string kosong kalau memang tidak ada
+     *                alternatif sama sekali).
+     */
+    protected function offerClosestAlternative(
+        ChatSession $session,
+        array $context,
+        Booking $booking,
+        string $fromTanggal,
+        JenisLayanan $jenis,
+        AntreanService $antrean,
+    ): string {
+        $closest = $antrean->offerAlternative($booking->kode_dokter, $fromTanggal, $jenis)[0] ?? null;
+
+        if ($closest === null) {
+            return '';
+        }
+
+        $context['alternatif_ditawarkan'] = "{$closest['tanggal']}|{$closest['shift']}|{$booking->id}";
+        $session->context = $context;
+
+        $tanggalLabel = Carbon::parse($closest['tanggal'])->translatedFormat('d F Y');
+        $shiftLabel = Shift::from($closest['shift'])->label();
+
+        return "\n\nAda jadwal terdekat yang tersedia di *{$tanggalLabel}* shift {$shiftLabel}. "
+            .'Balas *Ya* kalau ingin pindah ke jadwal itu, atau tunggu di antrean semula.';
+    }
+
+    /**
+     * Kata yang dianggap konfirmasi afirmatif atas tawaran
+     * offerClosestAlternative() - dicek deterministik SEBELUM AI sama
+     * sekali (lihat tryConfirmWaitlistAlternative()), TIDAK digantungkan ke
+     * extracted.konfirmasi dari AI. Alasan: kejadian nyata AI sempat
+     * mengarang balasan "berhasil dipindah ke jadwal baru" & "data
+     * diperbarui" padahal booking-nya SAMA SEKALI TIDAK BERUBAH di
+     * database - tidak ada satu pun kode yang benar-benar memindahkan
+     * booking sebelum fungsi ini dibuat. Memindahkan booking WAJIB lewat
+     * jalur deterministik ini, bukan improvisasi teks AI.
+     */
+    protected const WAITLIST_CONFIRM_KEYWORDS = ['ya', 'iya', 'yaa', 'setuju', 'oke', 'ok', 'boleh', 'sip', 'siap', 'benar', 'betul'];
+
+    /**
+     * Eksekusi pemindahan booking waitlist ke alternatif yang barusan
+     * ditawarkan offerClosestAlternative(), KALAU pesan user ini memang
+     * konfirmasi afirmatif (kata kunci WAITLIST_CONFIRM_KEYWORDS, ATAU
+     * pasien mengetik ulang tanggal alternatifnya) DAN tawarannya masih
+     * berlaku (booking terkait masih berstatus Waitlist - bisa saja sudah
+     * berubah lewat jalur lain, mis. dibatalkan, sejak ditawarkan).
+     *
+     * @return string|null null kalau tidak ada tawaran pending sama sekali,
+     *                     atau pesan ini bukan konfirmasi atasnya (biarkan
+     *                     alur normal/AI yang menjawab) - STRING (bukan
+     *                     null) untuk kedua hasil pemindahan, sukses
+     *                     MAUPUN gagal (jadwal keburu terisi pasien lain),
+     *                     supaya pasien selalu diberi tahu apa adanya,
+     *                     TIDAK PERNAH lewat improvisasi teks AI.
+     */
+    protected function tryConfirmWaitlistAlternative(ChatSession $session, string $text, AntreanService $antrean): ?string
+    {
+        $context = $session->context ?? [];
+        $offer = $context['alternatif_ditawarkan'] ?? null;
+
+        if ($offer === null) {
+            return null;
+        }
+
+        [$tanggal, $shiftValue, $bookingId] = array_pad(explode('|', $offer, 3), 3, null);
+
+        $booking = Booking::query()->find($bookingId);
+
+        // Tawaran sudah basi (mis. booking-nya sudah tidak Waitlist lagi
+        // lewat jalur lain) - bersihkan flag, jangan proses apa pun, jangan
+        // pula memblokir alur normal untuk pesan ini.
+        if (! $booking || $booking->status !== BookingStatus::Waitlist) {
+            unset($context['alternatif_ditawarkan']);
+            $session->context = $context;
+
+            return null;
+        }
+
+        $normalized = Str::lower(trim($text));
+
+        // Kata kunci afirmatif HANYA dianggap konfirmasi kalau pesannya
+        // pendek (<=4 kata) - tanpa batas ini, kata sesingkat "oke"/"boleh"
+        // yang kebetulan muncul di tengah kalimat lain yang tidak
+        // berhubungan (mis. "oke tapi saya mau tanya dulu soal biaya") akan
+        // salah picu pemindahan booking. Mengetik ulang tanggal
+        // alternatifnya secara eksplisit TIDAK punya batas ini - itu sudah
+        // cukup spesifik dengan sendirinya.
+        $isShortAffirmative = str_word_count($normalized) <= 4
+            && collect(self::WAITLIST_CONFIRM_KEYWORDS)->contains(fn (string $kw) => Str::contains($normalized, $kw));
+
+        $isConfirmation = $isShortAffirmative
+            || Str::contains($normalized, $tanggal)
+            || Str::contains($normalized, Carbon::parse($tanggal)->translatedFormat('d F Y'));
+
+        if (! $isConfirmation) {
+            return null;
+        }
+
+        unset($context['alternatif_ditawarkan']);
+        $session->context = $context;
+
+        $moved = $antrean->moveWaitlistToAlternative($booking, $tanggal, Shift::from($shiftValue));
+
+        if (! $moved) {
+            return 'Mohon maaf, jadwal tersebut baru saja terisi pasien lain. Anda tetap berada di antrean tunggu untuk jadwal semula - kami akan menghubungi Anda kalau ada jadwal tersedia.';
+        }
+
+        $hari = self::HARI_BY_ISO[Carbon::parse($tanggal)->dayOfWeekIso] ?? null;
+
+        $schedule = DoctorSchedule::query()
+            ->where('kode_dokter', $moved->kode_dokter)
+            ->where('kode_poliklinik', $moved->kode_poliklinik)
+            ->where('shift', $moved->shift->value)
+            ->where('hari', $hari)
+            ->where('source', 'manual')
+            ->first();
+
+        return $this->buildBookingConfirmationMessage($moved, $schedule?->jam_mulai ?? '00:00', $schedule?->jam_selesai ?? '00:00');
     }
 
     /**
