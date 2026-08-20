@@ -2,13 +2,8 @@ import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Link } from '@inertiajs/react';
 
 const subTabs = [
-    { name: 'Kuota', route: 'kuota.index', pattern: 'kuota.*' },
-    { name: 'Antrean', route: 'antrean.index', pattern: 'antrean.*' },
-    {
-        name: 'Monitoring Pasien',
-        route: 'monitoring.index',
-        pattern: 'monitoring.*',
-    },
+    { name: 'Data Pendaftaran', route: 'antrean.index', pattern: 'antrean.*' },
+    { name: 'Kuota dan Antrean', route: 'kuota.index', pattern: 'kuota.*' },
 ];
 
 export default function PreLayananLayout({ header, children }) {

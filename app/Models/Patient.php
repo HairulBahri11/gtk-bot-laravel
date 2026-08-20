@@ -20,6 +20,7 @@ class Patient extends Model
         'nama',
         'jk',
         'tanggal_lahir',
+        'tempat_lahir',
         'nama_ibu_kandung',
         'no_hp',
         'alamat',

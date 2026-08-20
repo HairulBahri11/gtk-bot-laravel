@@ -1,0 +1,44 @@
+services:
+  app:
+    build: .
+    image: gtkjombang-dashboard:${APP_ENV_TAG:-prod}
+    container_name: gtkjombang-dashboard-app-${APP_ENV_TAG:-prod}
+    restart: always
+    env_file:
+      - .env
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.gtkjombang-dashboard-${APP_ENV_TAG:-prod}.rule=Host(`${APP_DOMAIN:-dashboard.gtkjombang.com}`)
+      - traefik.http.routers.gtkjombang-dashboard-${APP_ENV_TAG:-prod}.tls=true
+      - traefik.http.routers.gtkjombang-dashboard-${APP_ENV_TAG:-prod}.entrypoints=web,websecure
+      - traefik.http.routers.gtkjombang-dashboard-${APP_ENV_TAG:-prod}.tls.certresolver=mytlschallenge
+      - traefik.http.services.gtkjombang-dashboard-${APP_ENV_TAG:-prod}.loadbalancer.server.port=80
+    networks:
+      - web
+
+  worker:
+    build: .
+    image: gtkjombang-dashboard:${APP_ENV_TAG:-prod}
+    container_name: gtkjombang-dashboard-worker-${APP_ENV_TAG:-prod}
+    restart: always
+    env_file:
+      - .env
+    command: php artisan queue:work database --sleep=3 --tries=3 --max-time=3600
+    depends_on:
+      - app
+
+  scheduler:
+    build: .
+    image: gtkjombang-dashboard:${APP_ENV_TAG:-prod}
+    container_name: gtkjombang-dashboard-scheduler-${APP_ENV_TAG:-prod}
+    restart: always
+    env_file:
+      - .env
+    command: sh -c "while true; do php artisan schedule:run --no-interaction; sleep 60; done"
+    depends_on:
+      - app
+
+networks:
+  web:
+    external: true
+    name: n8n_web
