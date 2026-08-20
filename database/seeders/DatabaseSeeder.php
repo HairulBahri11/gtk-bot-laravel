@@ -24,8 +24,8 @@ class DatabaseSeeder extends Seeder
     /**
      * Seed data dev/demo supaya dashboard tidak kosong saat dicek pertama
      * kali. Data master (poliklinik/dokter/jadwal) di sini hanya placeholder
-     * - jalankan `php artisan gtk:sync-quota` untuk menarik data asli begitu
-     * kredensial API GTK sudah diisi.
+     * - kelola data asli lewat dashboard (menu Poliklinik/Dokter/Jadwal
+     * Dokter), TIDAK ADA LAGI perintah sync dari GTK untuk data-data ini.
      */
     public function run(): void
     {
@@ -81,6 +81,7 @@ class DatabaseSeeder extends Seeder
         ];
 
         $doctorSchedules = collect();
+        $kuotaKonsultasiDefault = (int) config('gtk.kuota_konsultasi_default');
 
         foreach ($schedules as [$dokter, $poli, $hari, $jamMulai, $jamSelesai, $shift, $kuota]) {
             $doctorSchedules->push(DoctorSchedule::create([
@@ -91,6 +92,12 @@ class DatabaseSeeder extends Seeder
                 'jam_selesai' => $jamSelesai,
                 'shift' => $shift->value,
                 'kuota_total' => $kuota,
+                'kuota_konsultasi_gizi' => 0,
+                'kuota_konsultasi_tumbuh_kembang' => $kuotaKonsultasiDefault,
+                // Jadwal source='gtk' (default) tidak lagi dipakai untuk
+                // booking sama sekali - data demo ini harus 'manual' supaya
+                // tetap bisa dipakai booking saat testing lokal.
+                'source' => 'manual',
                 'synced_at' => now(),
             ]));
         }
@@ -113,6 +120,10 @@ class DatabaseSeeder extends Seeder
                     'shift' => $schedule->shift->value,
                     'kuota_total' => $schedule->kuota_total,
                     'kuota_terpakai' => 0,
+                    'kuota_konsultasi_gizi' => $schedule->kuota_konsultasi_gizi,
+                    'kuota_terpakai_konsultasi_gizi' => 0,
+                    'kuota_konsultasi_tumbuh_kembang' => $schedule->kuota_konsultasi_tumbuh_kembang,
+                    'kuota_terpakai_konsultasi_tumbuh_kembang' => 0,
                     'last_synced_at' => now(),
                 ]);
             }
@@ -156,6 +167,7 @@ class DatabaseSeeder extends Seeder
             'kode_dokter' => $dokterRina->kode_dokter,
             'tanggal_periksa' => $nextMonday->toDateString(),
             'shift' => Shift::Pagi->value,
+            'jenis_layanan' => 'pemeriksaan',
             'status' => BookingStatus::Booked->value,
         ]);
 

@@ -2,8 +2,9 @@ import ApplicationLogo from '@/Components/ApplicationLogo';
 import Dropdown from '@/Components/Dropdown';
 import NavLink from '@/Components/NavLink';
 import ResponsiveNavLink from '@/Components/ResponsiveNavLink';
-import { Link, usePage } from '@inertiajs/react';
-import { useState } from 'react';
+import { Link, router, usePage } from '@inertiajs/react';
+import { useEffect, useState } from 'react';
+import toast, { Toaster } from 'react-hot-toast';
 
 export default function AuthenticatedLayout({ header, children }) {
     const user = usePage().props.auth.user;
@@ -11,8 +12,37 @@ export default function AuthenticatedLayout({ header, children }) {
     const [showingNavigationDropdown, setShowingNavigationDropdown] =
         useState(false);
 
+    // Pakai event global router.on('success') (bukan useEffect yang
+    // depends on usePage().props.flash) - flash session Laravel HANYA
+    // hidup satu request, tapi kalau dua aksi berturut-turut menghasilkan
+    // pesan yang PERSIS sama (mis. "Booking dibatalkan." dua kali),
+    // dependency array useEffect tidak akan mendeteksi "perubahan" karena
+    // string-nya identik, sehingga toast kedua tidak muncul. Event ini
+    // fire di SETIAP visit Inertia selesai terlepas dari isi propsnya.
+    useEffect(() => {
+        return router.on('success', (event) => {
+            const flash = event.detail.page.props.flash;
+            if (flash?.success) toast.success(flash.success);
+            if (flash?.error) toast.error(flash.error);
+        });
+    }, []);
+
     return (
         <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
+            <Toaster
+                position="top-right"
+                toastOptions={{
+                    duration: 4000,
+                    className:
+                        'rounded-xl bg-white text-sm font-medium text-gray-900 shadow-lg ring-1 ring-gray-200/70 dark:bg-gray-900 dark:text-gray-100 dark:ring-gray-800',
+                    success: {
+                        iconTheme: { primary: '#16a34a', secondary: '#fff' },
+                    },
+                    error: {
+                        iconTheme: { primary: '#dc2626', secondary: '#fff' },
+                    },
+                }}
+            />
             <nav className="sticky top-0 z-30 border-b border-gray-200/80 bg-white/90 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/90">
                 <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
                     <div className="flex h-16 justify-between">
@@ -33,6 +63,28 @@ export default function AuthenticatedLayout({ header, children }) {
                                 >
                                     Overview
                                 </NavLink>
+                                <NavLink
+                                    href={route('jadwal.index')}
+                                    active={route().current('jadwal.*')}
+                                >
+                                    Jadwal Dokter
+                                </NavLink>
+                                {user.role !== 'dokter' && (
+                                    <NavLink
+                                        href={route('poliklinik.index')}
+                                        active={route().current('poliklinik.*')}
+                                    >
+                                        Poliklinik
+                                    </NavLink>
+                                )}
+                                {user.role !== 'dokter' && (
+                                    <NavLink
+                                        href={route('dokter.index')}
+                                        active={route().current('dokter.*')}
+                                    >
+                                        Dokter
+                                    </NavLink>
+                                )}
                                 <NavLink
                                     href={route('kuota.index')}
                                     active={
@@ -166,6 +218,28 @@ export default function AuthenticatedLayout({ header, children }) {
                         >
                             Overview
                         </ResponsiveNavLink>
+                        <ResponsiveNavLink
+                            href={route('jadwal.index')}
+                            active={route().current('jadwal.*')}
+                        >
+                            Jadwal Dokter
+                        </ResponsiveNavLink>
+                        {user.role !== 'dokter' && (
+                            <ResponsiveNavLink
+                                href={route('poliklinik.index')}
+                                active={route().current('poliklinik.*')}
+                            >
+                                Poliklinik
+                            </ResponsiveNavLink>
+                        )}
+                        {user.role !== 'dokter' && (
+                            <ResponsiveNavLink
+                                href={route('dokter.index')}
+                                active={route().current('dokter.*')}
+                            >
+                                Dokter
+                            </ResponsiveNavLink>
+                        )}
                         <ResponsiveNavLink
                             href={route('kuota.index')}
                             active={

@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\BookingStatus;
+use App\Enums\JenisLayanan;
 use App\Enums\Shift;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -19,16 +20,20 @@ class Booking extends Model
         'kode_dokter',
         'tanggal_periksa',
         'shift',
+        'jenis_layanan',
         'status',
         'waitlist_position',
+        'no_antrean',
         'buffer_shifted_count',
         'cancel_reason',
+        'rescheduled_to_booking_id',
     ];
 
     protected function casts(): array
     {
         return [
             'shift' => Shift::class,
+            'jenis_layanan' => JenisLayanan::class,
             'status' => BookingStatus::class,
             'tanggal_periksa' => 'date',
         ];
@@ -57,5 +62,10 @@ class Booking extends Model
     public function reminderLogs(): HasMany
     {
         return $this->hasMany(ReminderLog::class);
+    }
+
+    public function rescheduledTo(): BelongsTo
+    {
+        return $this->belongsTo(Booking::class, 'rescheduled_to_booking_id');
     }
 }

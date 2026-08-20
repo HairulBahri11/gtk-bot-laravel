@@ -28,6 +28,15 @@ docker compose run --rm app php artisan migrate --force
 echo ">> Recreate container dengan image baru"
 docker compose up -d --force-recreate
 
+# --force-recreate di atas sudah mengganti container worker dengan proses baru
+# (jadi tidak ada kode lama yang nyangkut di memori) - queue:restart di sini
+# murni jaga-jaga kalau suatu saat langkah recreate di atas diganti jadi
+# restart yang lebih ringan (mis. `docker compose restart` tanpa
+# --force-recreate), supaya worker tetap dipaksa reload kode baru tanpa
+# bergantung penuh pada recreate container.
+echo ">> Restart queue worker (jaga-jaga)"
+docker compose exec app php artisan queue:restart
+
 echo ">> Bersihkan image lama yang menganggur"
 docker image prune -f
 
