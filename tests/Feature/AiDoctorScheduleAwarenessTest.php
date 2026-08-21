@@ -197,4 +197,110 @@ class AiDoctorScheduleAwarenessTest extends TestCase
                 && ! str_contains($content, '07:00-11:00');
         });
     }
+
+    /**
+     * Kejadian nyata: pasien chat jam 10:06, sesi Pagi (08:00-09:30) sudah
+     * berakhir 36 menit sebelumnya, tapi AI tetap menawarkan "Pagi, Sore,
+     * atau Malam" saat menanyakan shift_pilihan untuk kunjungan hari ini -
+     * AI sama sekali tidak pernah diberi tahu jam sekarang, hanya
+     * tanggalnya. shiftAvailabilityTodayForPoliAnak() sekarang menyuntikkan
+     * daftar sesi yang sudah lewat ke system prompt STATE_1 supaya AI tidak
+     * lagi menawarkan sesi yang sudah tidak mungkin dipilih.
+     */
+    public function test_system_prompt_excludes_already_ended_shifts_today(): void
+    {
+        $this->travelTo(now()->setTime(10, 6));
+
+        $poli = Poliklinik::create(['kode_poliklinik' => '01', 'nama_poliklinik' => 'Poli Spesialis Anak', 'is_active' => true]);
+        Doctor::create(['kode_dokter' => 'MANUAL-RETNO', 'nama_dokter' => 'dr. Retno Wulandari, Sp.A', 'kode_poliklinik' => $poli->kode_poliklinik, 'is_active' => true]);
+
+        foreach ([['pagi', '08:00', '09:30'], ['sore', '15:30', '17:00']] as [$shift, $mulai, $selesai]) {
+            DoctorSchedule::create([
+                'kode_dokter' => 'MANUAL-RETNO',
+                'kode_poliklinik' => $poli->kode_poliklinik,
+                'hari' => $this->hariFor(now()),
+                'jam_mulai' => $mulai,
+                'jam_selesai' => $selesai,
+                'shift' => $shift,
+                'kuota_total' => 15,
+                'source' => 'manual',
+            ]);
+        }
+
+        $aiContent = json_encode([
+            'reply' => 'Mohon informasikan sesi yang diinginkan.',
+            'extracted' => [],
+            'ready_for_next_state' => false,
+        ]);
+
+        Http::fake([
+            'openrouter.ai/*' => Http::response(['choices' => [['message' => ['content' => $aiContent]]]], 200),
+        ]);
+
+        $session = ChatSession::create([
+            'chat_id' => '6281234567890@c.us',
+            'state' => ChatState::PengumpulanData->value,
+            'context' => ['tanggal_kunjungan' => now()->toDateString(), 'tanggal_kunjungan_dijawab' => true],
+        ]);
+
+        app(AiEngineService::class)->interpret($session, 'hari ini');
+
+        Http::assertSent(function ($request) {
+            $systemMessage = collect($request->data()['messages'])->firstWhere('role', 'system');
+            $content = $systemMessage['content'];
+
+            return str_contains($content, 'sesi yang JAMNYA SUDAH LEWAT sekarang')
+                && str_contains($content, 'JANGAN ditawarkan/disebutkan lagi sebagai pilihan): Pagi.')
+                && str_contains($content, 'Sesi yang masih bisa dipilih hari ini: Sore.');
+        });
+    }
+
+    /**
+     * Kebalikan dari test di atas - kalau belum ada sesi yang lewat jamnya
+     * hari ini (mis. pagi-pagi sebelum sesi Pagi buka), prompt TIDAK boleh
+     * menyisipkan paragraf "sudah lewat" sama sekali - paragraf kosong akan
+     * membingungkan AI.
+     */
+    public function test_system_prompt_omits_shift_availability_note_when_nothing_has_ended_today(): void
+    {
+        $this->travelTo(now()->setTime(7, 0));
+
+        $poli = Poliklinik::create(['kode_poliklinik' => '01', 'nama_poliklinik' => 'Poli Spesialis Anak', 'is_active' => true]);
+        Doctor::create(['kode_dokter' => 'MANUAL-RETNO', 'nama_dokter' => 'dr. Retno Wulandari, Sp.A', 'kode_poliklinik' => $poli->kode_poliklinik, 'is_active' => true]);
+
+        DoctorSchedule::create([
+            'kode_dokter' => 'MANUAL-RETNO',
+            'kode_poliklinik' => $poli->kode_poliklinik,
+            'hari' => $this->hariFor(now()),
+            'jam_mulai' => '08:00',
+            'jam_selesai' => '09:30',
+            'shift' => 'pagi',
+            'kuota_total' => 15,
+            'source' => 'manual',
+        ]);
+
+        $aiContent = json_encode([
+            'reply' => 'Baik, mohon lengkapi data pendaftaran.',
+            'extracted' => [],
+            'ready_for_next_state' => false,
+        ]);
+
+        Http::fake([
+            'openrouter.ai/*' => Http::response(['choices' => [['message' => ['content' => $aiContent]]]], 200),
+        ]);
+
+        $session = ChatSession::create([
+            'chat_id' => '6281234567890@c.us',
+            'state' => ChatState::PengumpulanData->value,
+            'context' => [],
+        ]);
+
+        app(AiEngineService::class)->interpret($session, 'Anak saya batuk pilek');
+
+        Http::assertSent(function ($request) {
+            $systemMessage = collect($request->data()['messages'])->firstWhere('role', 'system');
+
+            return ! str_contains($systemMessage['content'], 'sesi yang JAMNYA SUDAH LEWAT sekarang');
+        });
+    }
 }

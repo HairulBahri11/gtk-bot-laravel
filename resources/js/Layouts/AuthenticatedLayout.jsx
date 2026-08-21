@@ -1,5 +1,6 @@
 import ApplicationLogo from '@/Components/ApplicationLogo';
 import Dropdown from '@/Components/Dropdown';
+import LoadingOverlay from '@/Components/LoadingOverlay';
 import NavLink from '@/Components/NavLink';
 import ResponsiveNavLink from '@/Components/ResponsiveNavLink';
 import { Link, router, usePage } from '@inertiajs/react';
@@ -11,6 +12,7 @@ export default function AuthenticatedLayout({ header, children }) {
 
     const [showingNavigationDropdown, setShowingNavigationDropdown] =
         useState(false);
+    const [pageLoading, setPageLoading] = useState(false);
 
     // Pakai event global router.on('success') (bukan useEffect yang
     // depends on usePage().props.flash) - flash session Laravel HANYA
@@ -27,8 +29,27 @@ export default function AuthenticatedLayout({ header, children }) {
         });
     }, []);
 
+    // Overlay loading untuk SETIAP perpindahan/reload halaman Inertia (Link,
+    // router.get/post/dst, termasuk filter tanggal/status yang preserveState).
+    // Muncul LANGSUNG begitu visit mulai (TANPA delay buatan apapun - delay
+    // di sini cuma menunda kapan overlay-nya TAMPIL, tidak mempercepat visit
+    // itu sendiri sama sekali, tapi bikin transisi terasa lebih lambat/diam
+    // saja tanpa umpan balik). 'finish' selalu fire begitu visit selesai
+    // apapun hasilnya (sukses, error, atau dibatalkan), jadi overlay tidak
+    // pernah nyangkut nyala.
+    useEffect(() => {
+        const removeStart = router.on('start', () => setPageLoading(true));
+        const removeFinish = router.on('finish', () => setPageLoading(false));
+
+        return () => {
+            removeStart();
+            removeFinish();
+        };
+    }, []);
+
     return (
         <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
+            <LoadingOverlay show={pageLoading} />
             <Toaster
                 position="top-right"
                 toastOptions={{

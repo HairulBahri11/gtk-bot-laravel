@@ -359,6 +359,91 @@ class AiEngineService
     }
 
     /**
+     * Sesi (Pagi/Sore/Malam) yang jam SELESAI-nya sudah lewat HARI INI untuk
+     * Poli Spesialis Anak - dipakai stateOnePrompt() supaya AI tidak
+     * menawarkan/menyebutkan sesi yang sudah tidak mungkin dipilih lagi saat
+     * menanyakan shift_pilihan untuk kunjungan hari ini (kejadian nyata:
+     * pasien chat jam 10:06, sesi Pagi 08:00-09:30 sudah berakhir, tapi AI
+     * tetap menawarkan "Pagi, Sore, atau Malam" karena sama sekali tidak
+     * tahu jam sekarang - AI hanya diberi TANGGAL hari ini di prompt utama,
+     * bukan jam). Penegakan booking yang SEBENARNYA tetap sepenuhnya
+     * server-side di resolveSlotAndReply()/isShiftOverToday() seperti biasa
+     * (lihat ProcessIncomingWhatsappMessage) - ini murni supaya
+     * PERTANYAANNYA sendiri tidak menyesatkan, AI tidak pernah dipercaya
+     * untuk penegakan keputusan booking.
+     *
+     * Satu shift dianggap "sudah lewat" HANYA kalau SEMUA baris jadwal hari
+     * ini untuk shift itu sudah lewat jam selesainya - kalau ADA SATU SAJA
+     * dokter/baris yang jam selesainya masih di depan (mis. jam selesai
+     * beda-beda antar dokter/hari untuk shift yang sama), shift itu masih
+     * dianggap tersedia.
+     */
+    protected function shiftAvailabilityTodayForPoliAnak(): string
+    {
+        $poli = Poliklinik::query()->where('nama_poliklinik', 'Poli Spesialis Anak')->first();
+
+        if (! $poli) {
+            return '';
+        }
+
+        $hariByIso = [1 => 'SENIN', 2 => 'SELASA', 3 => 'RABU', 4 => 'KAMIS', 5 => 'JUMAT', 6 => 'SABTU', 7 => 'MINGGU'];
+        $today = today();
+        $hariIni = $hariByIso[$today->dayOfWeekIso] ?? null;
+
+        if (! $hariIni) {
+            return '';
+        }
+
+        $schedulesToday = DoctorSchedule::query()
+            ->where('kode_poliklinik', $poli->kode_poliklinik)
+            ->where('source', 'manual')
+            ->where('hari', $hariIni)
+            ->whereHas('doctor', fn ($q) => $q->where('is_active', true))
+            ->get();
+
+        if ($schedulesToday->isEmpty()) {
+            return '';
+        }
+
+        $shiftLabel = ['pagi' => 'Pagi', 'sore' => 'Sore', 'malam' => 'Malam'];
+        $now = now();
+
+        $sudahLewat = [];
+        $masihTersedia = [];
+
+        foreach (['pagi', 'sore', 'malam'] as $shiftValue) {
+            $rows = $schedulesToday->where('shift', $shiftValue);
+
+            if ($rows->isEmpty()) {
+                continue;
+            }
+
+            $masihAda = $rows->contains(
+                fn (DoctorSchedule $s) => $now->lt($today->copy()->setTimeFromTimeString($s->jam_selesai))
+            );
+
+            if ($masihAda) {
+                $masihTersedia[] = $shiftLabel[$shiftValue];
+            } else {
+                $sudahLewat[] = $shiftLabel[$shiftValue];
+            }
+        }
+
+        if (empty($sudahLewat)) {
+            return '';
+        }
+
+        $pesan = 'Untuk KUNJUNGAN HARI INI, sesi yang JAMNYA SUDAH LEWAT sekarang (JANGAN ditawarkan/disebutkan lagi sebagai pilihan): '
+            .implode(', ', $sudahLewat).'.';
+
+        $pesan .= $masihTersedia !== []
+            ? ' Sesi yang masih bisa dipilih hari ini: '.implode(', ', $masihTersedia).'.'
+            : ' TIDAK ADA sesi lain yang tersedia lagi hari ini.';
+
+        return $pesan;
+    }
+
+    /**
      * Ubah daftar angka hari ISO (1=Senin..7=Minggu) jadi kelompok-kelompok
      * hari BERURUTAN, mis. [1,2,3,4,5,6] -> [[1,2,3,4,5,6]], [1,2,4] ->
      * [[1,2],[4]] - dipakai weeklyScheduleSummaryForPoliAnak() untuk
@@ -405,7 +490,7 @@ class AiEngineService
         $contextJson = json_encode($context, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
         $stateInstruction = match ($session->state) {
-            ChatState::PengumpulanData => $this->stateOnePrompt($this->weeklyScheduleSummaryForPoliAnak()),
+            ChatState::PengumpulanData => $this->stateOnePrompt($this->weeklyScheduleSummaryForPoliAnak(), $this->shiftAvailabilityTodayForPoliAnak()),
             ChatState::Konfirmasi => $this->stateTwoPrompt(),
             ChatState::Done => $this->stateThreePrompt(),
         };
@@ -415,7 +500,7 @@ class AiEngineService
 
         $today = now();
         $hariIndo = [1 => 'Senin', 2 => 'Selasa', 3 => 'Rabu', 4 => 'Kamis', 5 => 'Jumat', 6 => 'Sabtu', 7 => 'Minggu'];
-        $todayLabel = ($hariIndo[$today->dayOfWeekIso] ?? '').', '.$today->format('Y-m-d');
+        $todayLabel = ($hariIndo[$today->dayOfWeekIso] ?? '').', '.$today->format('Y-m-d').', pukul '.$today->format('H:i').' WIB';
 
         $doctorSchedule = $this->doctorScheduleSummary();
 
@@ -454,15 +539,16 @@ class AiEngineService
               (format WhatsApp, BUKAN markdown "**tebal**" ganda).
 
             ATURAN WAJIB:
-            - Tanggal hari ini (acuan mutlak - JANGAN PERNAH menebak/mengasumsikan
-              tanggal hari ini sendiri, JANGAN PERNAH pakai tanggal/tahun lain):
-              {$todayLabel}. WAJIB pakai ini sebagai acuan untuk menghitung SEMUA
-              tanggal relatif yang disebut user (mis. "besok", "minggu depan",
-              "tanggal 5") maupun memvalidasi tanggal absolut yang disebut user.
-              Kalau user menyebut tanggal tanpa tahun (mis. "5 Agustus"), asumsikan
-              tahun berjalan dari tanggal hari ini di atas - kecuali tanggal itu
-              sudah lewat di tahun berjalan, baru pakai tahun berikutnya. JANGAN
-              PERNAH keliru/tertukar tahun, terutama untuk tanggal_kunjungan yang
+            - Tanggal & jam sekarang (acuan mutlak - JANGAN PERNAH menebak/
+              mengasumsikan tanggal/jam sekarang sendiri, JANGAN PERNAH pakai
+              tanggal/tahun/jam lain): {$todayLabel}. WAJIB pakai ini sebagai
+              acuan untuk menghitung SEMUA tanggal relatif yang disebut user
+              (mis. "besok", "minggu depan", "tanggal 5") maupun memvalidasi
+              tanggal absolut yang disebut user. Kalau user menyebut tanggal
+              tanpa tahun (mis. "5 Agustus"), asumsikan tahun berjalan dari
+              tanggal hari ini di atas - kecuali tanggal itu sudah lewat di
+              tahun berjalan, baru pakai tahun berikutnya. JANGAN PERNAH
+              keliru/tertukar tahun, terutama untuk tanggal_kunjungan yang
               WAJIB selalu di hari ini atau setelahnya.
             - DATA JADWAL DOKTER hari ini & besok (data resmi dari sistem, BUKAN
               tebakan - HANYA mencakup dokter dengan jadwal terkelola manual di
@@ -628,8 +714,14 @@ class AiEngineService
             PROMPT;
     }
 
-    protected function stateOnePrompt(string $weeklySchedule): string
+    protected function stateOnePrompt(string $weeklySchedule, string $shiftAvailabilityToday = ''): string
     {
+        // Kosong kalau bukan hari ini/belum ada sesi yang lewat - JANGAN
+        // sisipkan paragraf yang membingungkan kalau memang tidak relevan.
+        $shiftAvailabilityBlock = $shiftAvailabilityToday !== ''
+            ? "\n               {$shiftAvailabilityToday} Kalau kamu perlu menanyakan sesi\n               (shift_pilihan) secara spesifik untuk kunjungan HARI INI (field itu\n               masih kosong), HANYA sebutkan sesi yang masih bisa dipilih di atas -\n               JANGAN tawarkan/sebutkan sesi yang sudah lewat sama sekali. (TIDAK\n               berlaku untuk tanggal selain hari ini - sesi manapun tetap boleh\n               ditawarkan untuk tanggal di masa depan.)\n"
+            : '';
+
         return <<<TXT
             STATE SEKARANG: STATE_1_PENGUMPULAN_DATA
 
@@ -916,6 +1008,7 @@ class AiEngineService
                kosong/tidak valid, baru tanyakan secara spesifik & empatik
                field yang kurang itu saja (boleh satu-dua per giliran) sampai
                lengkap.
+               {$shiftAvailabilityBlock}
             3. Kalau data terkumpul memuat "pasien_ditawarkan" (No. RM
                kandidat pasien yang kemungkinan cocok, ditemukan sistem
                berdasarkan tanggal lahir yang sama persis), itu artinya
