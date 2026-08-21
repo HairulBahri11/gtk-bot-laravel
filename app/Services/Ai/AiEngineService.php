@@ -1084,11 +1084,13 @@ class AiEngineService
             ringkasan lagi ATAU meminta konfirmasi "ya"/"tidak" terpisah di
             sini. Sistem (bukan kamu) yang akan mengecek jadwal yang BENAR-
             BENAR tersedia (bukan sekadar tanggal yang diminta user) dan
-            menanyakan konfirmasi akhir ke user - kalau kamu JUGA menampilkan
-            ringkasan+minta konfirmasi di giliran ini, user akan ditanya
-            "apakah setuju dengan jadwal ini" DUA KALI berturut-turut untuk
-            hal yang sama (sekali olehmu, sekali oleh sistem) - itu SALAH,
-            cukup SATU KALI oleh sistem saja. Balasanmu pada giliran ini
+            LANGSUNG memproses booking-nya ke jadwal dengan kuota & shift
+            tersedia - TIDAK ADA giliran konfirmasi tambahan lagi (baik
+            tanggal spesifik maupun "secepatnya"/"terdekat" langsung
+            diproses). Kalau kamu JUGA menampilkan ringkasan+minta konfirmasi
+            di giliran ini, itu SALAH - user tidak perlu ditanya "apakah
+            setuju dengan jadwal ini" sama sekali, sistem langsung
+            memprosesnya begitu data lengkap. Balasanmu pada giliran ini
             cukup singkat mengonfirmasi data sudah lengkap (mis. "Baik, data
             kunjungannya sudah lengkap.") TANPA menjanjikan/menyebut jadwal
             spesifik apapun - balasan ini normalnya tidak akan pernah dilihat

@@ -773,7 +773,6 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
 
         // resolvePatient() dijalankan ULANG dari nol setiap giliran selama
         // masih di STATE_1 (bukan cuma sekali) - sengaja dibuat begini
-        // (pola sama persis dengan slot_ditawarkan di handleStateTwo())
         // supaya kalau user mengoreksi ejaan nama/tanggal lahir SETELAH
         // ditanya konfirmasi (lihat awaiting_confirmation di bawah), koreksi
         // itu otomatis dievaluasi ulang tanpa butuh mekanisme deteksi
@@ -836,10 +835,10 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
      * - Confident: langsung pakai, PERSIS seperti perilaku lama - tidak ada
      *   friksi tambahan untuk kasus umum "nama diketik benar".
      * - Probable: JANGAN langsung pakai ATAU langsung anggap pasien baru -
-     *   tawarkan kandidatnya & minta konfirmasi eksplisit dulu (pola sama
-     *   persis dengan slot_ditawarkan di handleStateTwo()), supaya tidak
-     *   diam-diam salah nyambung ke rekam medis orang lain MAUPUN diam-diam
-     *   membuat duplikat padahal pasiennya sudah ada.
+     *   tawarkan kandidatnya & minta konfirmasi eksplisit dulu (giliran
+     *   terpisah, lihat handleProbableMatch()), supaya tidak diam-diam salah
+     *   nyambung ke rekam medis orang lain MAUPUN diam-diam membuat
+     *   duplikat padahal pasiennya sudah ada.
      * - NoMatch: buat pasien baru, PERSIS seperti perilaku lama.
      *
      * @return array{awaiting_confirmation: bool, reply: ?string, no_rm: ?string, context: array}
@@ -923,8 +922,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
     /**
      * Kandidat "Probable" (lihat resolvePatient()) tidak langsung dipakai
      * ATAU langsung dianggap pasien baru - tawarkan dulu & tunggu
-     * konfirmasi eksplisit, mengikuti pola slot_ditawarkan di
-     * handleStateTwo() persis: giliran PERTAMA kandidat ini ditawarkan,
+     * konfirmasi eksplisit: giliran PERTAMA kandidat ini ditawarkan,
      * kirim pertanyaan konfirmasi yang DISUSUN SERVER (bukan diserahkan ke
      * AI - salah tafsir/halusinasi AI di sini berisiko tinggi, ini soal
      * identitas rekam medis, bukan sekadar jadwal). Baru pada giliran
@@ -1190,12 +1188,9 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         // AI) - itu menghasilkan DUA kali tanya-konfirmasi berturut-turut ke
         // user (versi AI, lalu versi server di bawah), padahal cuma perlu
         // satu. Begitu shift+tanggal terisi, langsung lanjut ke resolusi
-        // slot - kalau tanggalnya diminta eksplisit oleh pasien sendiri,
-        // hasil resolusi itu langsung dipakai booking TANPA giliran
-        // konfirmasi tambahan lagi (pasien sudah menyatakannya sendiri di
-        // formulir/balasannya); giliran konfirmasi via slot_ditawarkan HANYA
-        // dipakai untuk cabang "secepatnya" (lihat komentar slot_ditawarkan
-        // di bawah untuk alasannya).
+        // slot - hasil resolusi itu langsung dipakai booking TANPA giliran
+        // konfirmasi tambahan lagi, baik untuk tanggal eksplisit maupun
+        // "secepatnya" (lihat resolveSlotAndReply()).
         $tanggalRaw = is_string($tanggalInput) ? trim($tanggalInput) : null;
         $tanggalSecepatnya = $tanggalRaw !== null && strtolower($tanggalRaw) === 'secepatnya';
 
@@ -1347,10 +1342,10 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
                 // Andriyani, tapi sistem lama memilih dr. Retno Wulandari
                 // semata karena urutan query, bukan permintaan pasien).
                 // Tanyakan dulu, server yang menyusun pertanyaannya (bukan
-                // AI) - sama seperti prinsip slot_ditawarkan. dokter_pilihan
-                // akan terisi dari jawaban giliran berikutnya, lalu method
-                // ini dievaluasi ulang dari awal (pola yang sama dengan
-                // resolvePatient() dievaluasi ulang tiap giliran).
+                // AI). dokter_pilihan akan terisi dari jawaban giliran
+                // berikutnya, lalu method ini dievaluasi ulang dari awal
+                // (pola yang sama dengan resolvePatient() dievaluasi ulang
+                // tiap giliran).
                 $daftarDokter = $schedulesForDate
                     ->map(fn (DoctorSchedule $s) => '*'.($s->doctor?->nama_dokter ?? $s->kode_dokter).'*'
                         .' (pukul *'.$this->formatJamRange($s->jam_mulai, $s->jam_selesai).'*)')
@@ -1381,42 +1376,18 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             }
         }
 
-        // Kalau tanggal_kunjungan diminta EKSPLISIT oleh pasien sendiri
-        // (bukan "secepatnya") dan slot PERSIS tanggal+shift itu tersedia
-        // ($tanggalSecepatnya === false, cabang findSlotOnDate() di atas),
-        // JANGAN tanya konfirmasi lagi - pasien sudah menyatakan sendiri
-        // tanggal & shift ini (di formulir STATE_1 atau balasan eksplisitnya
-        // di STATE_2), beda dari kejadian lama yang melatarbelakangi
-        // mekanisme ini (AI diam-diam mengisi tanggal_kunjungan sendiri
-        // tanpa pernah menanyakannya - itu sekarang sudah dicegah oleh gate
-        // tanggal_kunjungan_dijawab di atas). Menanyakan ulang persetujuan
-        // untuk sesuatu yang sudah persis mereka minta sendiri hanya jadi
-        // konfirmasi ganda - langsung booking.
-        // Konfirmasi TETAP dipakai HANYA untuk cabang "secepatnya"
-        // (findNearestSlot() di atas) - di situ SISTEM yang memilihkan
-        // tanggal/dokternya, bukan pasien, jadi mereka belum pernah
-        // benar-benar melihat/menyetujui tanggal spesifik yang dipilihkan
-        // sebelum booking dibuat; giliran TERPISAH via slot_ditawarkan tetap
-        // wajib di sini.
-        if ($tanggalSecepatnya) {
-            $slotKey = $slot['tanggal'].'|'.$slot['kode_dokter'].'|'.$shift->value;
-
-            if (($context['slot_ditawarkan'] ?? null) !== $slotKey) {
-                $context['slot_ditawarkan'] = $slotKey;
-                $session->context = $context;
-
-                $tanggalLabel = Carbon::parse($slot['tanggal'])->translatedFormat('d F Y');
-                $jamLabel = $this->formatJamRange($slot['jam_mulai'], $slot['jam_selesai']);
-
-                return "Untuk poliklinik {$poli->nama_poliklinik}, jadwal yang tersedia adalah "
-                    ."*{$tanggalLabel}* shift {$shift->label()} pukul *{$jamLabel}*. Apakah Bunda/Ayah setuju dengan jadwal ini? "
-                    .'Balas "Ya" untuk konfirmasi, atau beri tahu kami kalau ingin tanggal/shift lain.';
-            }
-
-            unset($context['slot_ditawarkan']);
-            $session->context = $context;
-        }
-
+        // Baik tanggal EKSPLISIT (findSlotOnDate() di atas) maupun
+        // "secepatnya" (findNearestSlot() di atas) langsung booking TANPA
+        // giliran konfirmasi tambahan - pasien sudah menyatakan preferensinya
+        // sendiri (tanggal spesifik, ATAU "secepatnya"/"terdekat" yang
+        // berarti "pakai jadwal kuota/shift tersedia berikutnya, tidak perlu
+        // ditanya lagi"), jadi menanyakan ulang persetujuan sebelum booking
+        // cuma jadi giliran ekstra yang tidak diminta. (Dulu cabang
+        // "secepatnya" sempat menahan konfirmasi terpisah lewat
+        // context['slot_ditawarkan'] dengan alasan sistem yang memilihkan
+        // tanggal/dokternya - sengaja dihapus atas permintaan eksplisit,
+        // supaya kedua cabang konsisten langsung proses ke jadwal dengan
+        // kuota & shift tersedia.)
         $booking = $antrean->createBooking($session, [
             'no_rm' => $session->no_rm,
             'kode_poliklinik' => $poli->kode_poliklinik,
@@ -1960,9 +1931,6 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             // pemeriksaan, sekarang cuma konsultasi kontrol), jadi kalau tidak
             // direset di sini booking kedua akan diam-diam memakai pool kuota
             // kunjungan pertama tanpa pernah benar-benar ditanyakan ulang.
-            // slot_ditawarkan juga wajib dibersihkan - kalau tidak, slot lama
-            // yang kebetulan cocok lagi bisa lolos gerbang konfirmasi tanpa
-            // pernah benar-benar ditawarkan ulang untuk kunjungan baru ini.
             //
             // Identitas pasien (nama/tanggal_lahir/tempat_lahir/nama_ibu_kandung/
             // jenis_kelamin/no_hp) SENGAJA IKUT direset di sini juga - dulu
@@ -1978,7 +1946,6 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
                 $context['shift_pilihan'], $context['dokter_pilihan'],
                 $context['jenis_layanan'], $context['jenis_layanan_dijawab'],
                 $context['tanggal_kunjungan'], $context['tanggal_kunjungan_dijawab'],
-                $context['slot_ditawarkan'],
                 $context['nama'], $context['tanggal_lahir'], $context['tempat_lahir'],
                 $context['nama_ibu_kandung'], $context['jenis_kelamin'],
                 $context['no_hp'], $context['no_hp_dikonfirmasi'],

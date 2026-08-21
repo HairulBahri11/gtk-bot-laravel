@@ -260,16 +260,7 @@ class JenisLayananQuotaTest extends TestCase
             'status' => BookingStatus::Booked->value,
         ]);
 
-        // Dokter ini bersumber 'manual', jadi QuotaService::syncSchedules()
-        // melewatinya sepenuhnya (tidak pernah panggil jadwaldokter) -
-        // hanya poliklinik/dokteraktif yang perlu di-fake di sini.
-        Http::fake([
-            '*url=auth*' => Http::response(['response' => ['token' => 'test-token'], 'metadata' => ['message' => 'Ok', 'code' => 200]], 200),
-            '*url=poliklinik*' => Http::response(['response' => ['list' => []], 'metadata' => ['message' => 'Ok', 'code' => 200]], 200),
-            '*url=dokteraktif*' => Http::response(['response' => ['list' => []], 'metadata' => ['message' => 'Ok', 'code' => 200]], 200),
-        ]);
-
-        app(QuotaService::class)->syncFromGtk(daysAhead: 3);
+        app(QuotaService::class)->rebuildQuotaShifts(3);
 
         $quotaShift->refresh();
 
