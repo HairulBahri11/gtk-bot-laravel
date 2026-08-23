@@ -830,6 +830,66 @@ class WhatsappWebhookTest extends TestCase
         Http::assertNotSent(fn ($request) => str_contains((string) $request->url(), 'tambahpasien'));
     }
 
+    /**
+     * Konsultasi Gizi/Tumbuh Kembang tidak lagi menanyakan jadwal kunjungan
+     * (shift_pilihan/tanggal_kunjungan) sama sekali (lihat AiEngineService::
+     * stateOnePrompt() "PENTING soal jadwal kunjungan") - server WAJIB tetap
+     * bisa menyelesaikan booking begitu field lain lengkap, WALAU AI (persis
+     * seperti instruksi prompt yang baru) tidak pernah mengisi shift_pilihan/
+     * tanggal_kunjungan sama sekali. forceAutoScheduleForKonsultasi() yang
+     * memaksa nilai "terdekat"/"secepatnya" di server, lalu resolveSlotAndReply()
+     * mencari slot terdekat lintas SEMUA shift sendiri.
+     */
+    public function test_konsultasi_booking_skips_jadwal_kunjungan_question_and_auto_resolves_nearest_slot(): void
+    {
+        $this->seedMasterData();
+
+        // seedMasterData() hanya menyiapkan pool default (Pemeriksaan) untuk
+        // shift pagi hari ini - beri alokasi Konsultasi Tumbuh Kembang di
+        // situ supaya slot ini nyata tersedia untuk kategori ini.
+        DoctorSchedule::where('kode_dokter', 'D01')->where('shift', 'pagi')->update([
+            'kuota_konsultasi_tumbuh_kembang' => 2,
+        ]);
+        QuotaShift::where('kode_dokter', 'D01')->where('shift', 'pagi')->update([
+            'kuota_konsultasi_tumbuh_kembang' => 2,
+        ]);
+
+        $fakeWa = new FakeWhatsAppService;
+        $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
+
+        Http::fake([
+            'openrouter.ai/*' => Http::response($this->openRouterResponse($this->stateOneAiContent([
+                'keluhan' => 'Berat badan anak susah naik',
+                'jenis_layanan' => 'konsultasi_tumbuh_kembang',
+                'jenis_layanan_dijawab' => true,
+                'shift_pilihan' => null,
+                'tanggal_kunjungan' => null,
+                'tanggal_kunjungan_dijawab' => null,
+            ])), 200),
+            '*url=auth*' => Http::response($this->gtkOk(['token' => 'test-token']), 200),
+            '*url=caripasien*' => Http::response($this->gtkFail('Data tidak ditemukan', 404), 200),
+            '*url=tambahpasien*' => Http::response($this->gtkOk(['no_rkm_medis' => '000099'], 'Pasien baru berhasil didaftarkan'), 200),
+            '*url=regpasien*' => Http::response($this->gtkOk(['no_rawat' => '2026/07/20/000001', 'no_reg' => '1'], 'Registrasi berhasil'), 200),
+        ]);
+
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Anak saya Budi, lahir 2021-01-01, ibu Sari, mau konsultasi tumbuh kembang, laki-laki',
+            ],
+        ])->assertOk();
+
+        $session = ChatSession::query()->where('chat_id', $this->chatId)->firstOrFail();
+        $this->assertSame(ChatState::Done, $session->state);
+
+        $booking = Booking::query()->where('no_rm', '000099')->firstOrFail();
+        $this->assertSame(BookingStatus::Booked, $booking->status);
+        $this->assertSame(Shift::Pagi, $booking->shift);
+        $this->assertSame(now()->toDateString(), $booking->tanggal_periksa->toDateString());
+    }
+
     protected function seedMasterData(): void
     {
         $poli = Poliklinik::create([

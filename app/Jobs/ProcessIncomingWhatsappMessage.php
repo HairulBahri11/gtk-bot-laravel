@@ -611,6 +611,42 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         'shift_pilihan', 'tanggal_kunjungan', 'tanggal_kunjungan_dijawab', 'dokter_pilihan',
     ];
 
+    /**
+     * Sentinel context['shift_pilihan'] yang menandakan resolveSlotAndReply()
+     * harus mencari jadwal terdekat lintas SEMUA shift sendiri (lihat cabang
+     * $autoNearestShift di sana), bukan menunggu pilihan shift dari orang
+     * tua - dipasang HANYA oleh forceAutoScheduleForKonsultasi() di bawah,
+     * TIDAK PERNAH oleh AI/user secara langsung.
+     */
+    protected const AUTO_NEAREST_SHIFT = 'terdekat';
+
+    /**
+     * Konsultasi Gizi/Tumbuh Kembang tidak lagi menanyakan jadwal kunjungan
+     * (tanggal+sesi) di formulir pendaftaran sama sekali (lihat
+     * AiEngineService::stateOnePrompt() "PENTING soal jadwal kunjungan") -
+     * dipaksakan DI SINI juga (bukan hanya lewat instruksi prompt), pola
+     * yang sama dengan validasi field lain di handleStateOne(), supaya AI
+     * yang lupa/keliru tidak bisa membuat form tetap menanyakan field ini.
+     * Dipanggil dari KEDUA titik yang bisa menjalankan resolveSlotAndReply()
+     * (handleStateOne() jalur normal, handleStateTwo() fallback) supaya
+     * keduanya konsisten.
+     */
+    protected function forceAutoScheduleForKonsultasi(ChatSession $session, array $context): array
+    {
+        $jenis = JenisLayanan::tryFrom((string) ($context['jenis_layanan'] ?? ''));
+
+        if ($jenis === null || $jenis === JenisLayanan::Pemeriksaan) {
+            return $context;
+        }
+
+        $context['shift_pilihan'] = self::AUTO_NEAREST_SHIFT;
+        $context['tanggal_kunjungan'] = 'secepatnya';
+        $context['tanggal_kunjungan_dijawab'] = true;
+        $session->context = $context;
+
+        return $context;
+    }
+
     protected function mergeContext(ChatSession $session, array $extracted): void
     {
         $context = $session->context ?? [];
@@ -715,6 +751,8 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             unset($context['jenis_layanan'], $context['jenis_layanan_dijawab']);
             $session->context = $context;
         }
+
+        $context = $this->forceAutoScheduleForKonsultasi($session, $context);
 
         $required = ['nama', 'tanggal_lahir', 'tempat_lahir', 'nama_ibu_kandung', 'jenis_kelamin', 'no_hp', 'keluhan'];
         $complete = collect($required)->every(fn ($field) => filled($context[$field] ?? null));
@@ -1148,7 +1186,9 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             return $result['reply'];
         }
 
-        return $this->resolveSlotAndReply($session, $session->context, $result, $antrean, $quota);
+        $context = $this->forceAutoScheduleForKonsultasi($session, $session->context);
+
+        return $this->resolveSlotAndReply($session, $context, $result, $antrean, $quota);
     }
 
     /**
@@ -1223,9 +1263,16 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             return "Maaf, poliklinik \"{$poliInput}\" tidak ditemukan. Poliklinik tersedia: {$options}";
         }
 
-        $shift = Shift::tryFrom(strtolower((string) $shiftInput));
+        // Sentinel dipasang forceAutoScheduleForKonsultasi() untuk
+        // jenis_layanan konsultasi_gizi/konsultasi_tumbuh_kembang - $shift
+        // BELUM ditentukan di sini sama sekali, dicari lintas SEMUA shift
+        // di cabang $autoNearestShift di bawah (bukan divalidasi sebagai
+        // input shift biasa seperti kasus lain).
+        $autoNearestShift = $shiftInput === self::AUTO_NEAREST_SHIFT;
 
-        if (! $shift) {
+        $shift = $autoNearestShift ? null : Shift::tryFrom(strtolower((string) $shiftInput));
+
+        if (! $autoNearestShift && ! $shift) {
             return 'Mohon pilih shift: Pagi, Sore, atau Malam.';
         }
 
@@ -1246,7 +1293,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         // menjelaskan pergantiannya secara eksplisit ke orang tua.
         $originalShift = $shift;
 
-        if (! $tanggalSecepatnya) {
+        if (! $autoNearestShift && ! $tanggalSecepatnya) {
             $requestedDate = $this->parseTanggalKunjungan($tanggalRaw);
 
             if (! $requestedDate || $requestedDate->lt(Carbon::today())) {
@@ -1357,6 +1404,32 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             }
 
             $slot = $this->findSlotOnDate($requestedDate, $shift, $quota, $jenis, $schedulesForDate);
+        } elseif ($autoNearestShift) {
+            // Konsultasi Gizi/Tumbuh Kembang: tidak ada shift yang diminta
+            // sama sekali - cari yang PALING DEKAT di antara ketiga shift
+            // (SHIFT_ORDER dipakai juga sebagai tie-break kalau beberapa
+            // shift kebetulan sama-sama jatuh di tanggal terdekat yang
+            // sama, supaya deterministik: Pagi diutamakan, lalu Sore, lalu
+            // Malam).
+            $slot = null;
+
+            foreach (self::SHIFT_ORDER as $candidateShift) {
+                $found = $this->findNearestSlot($poli->kode_poliklinik, $candidateShift, $quota, $jenis);
+
+                if ($found === null) {
+                    continue;
+                }
+
+                if ($slot === null || $found['tanggal'] < $slot['tanggal']) {
+                    $slot = $found;
+                    $shift = $candidateShift;
+                }
+            }
+
+            if (! $slot) {
+                return "Maaf, belum ada jadwal untuk poliklinik {$poli->nama_poliklinik} dalam waktu dekat di semua shift. "
+                    .'Silakan coba lagi nanti atau hubungi kami langsung.';
+            }
         } else {
             $slot = $this->findNearestSlot($poli->kode_poliklinik, $shift, $quota, $jenis);
 
@@ -1404,7 +1477,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             // Sama seperti pesan sukses di bawah - $shift bisa saja sudah
             // diganti dari $originalShift kalau sesi semula sudah lewat
             // jamnya hari ini (lihat blok "hari ini" di atas).
-            $pergantianSesi = $shift !== $originalShift
+            $pergantianSesi = (! $autoNearestShift && $shift !== $originalShift)
                 ? "Mohon maaf, sesi {$originalShift->label()} untuk hari ini sudah berakhir, sehingga Adik dialihkan ke sesi {$shift->label()}.\n\n"
                 : '';
 
@@ -1437,7 +1510,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         // "hari ini" di atas) - beri tahu orang tua secara eksplisit supaya
         // pergantian sesi ini tidak cuma "kelihatan" dari tanggal/jam pada
         // baris berikutnya, tapi benar-benar dijelaskan.
-        $pergantianSesi = $shift !== $originalShift
+        $pergantianSesi = (! $autoNearestShift && $shift !== $originalShift)
             ? "Mohon maaf, sesi {$originalShift->label()} untuk hari ini sudah berakhir, sehingga Adik dijadwalkan pada sesi {$shift->label()} sebagai gantinya.\n\n"
             : '';
 

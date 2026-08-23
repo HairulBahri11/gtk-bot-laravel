@@ -882,11 +882,16 @@ class AiEngineService
                  "PENTING soal tempat & tanggal lahir" di bawah), Nama ibu
                  kandung, Jenis kelamin, Nomor WhatsApp aktif yang bisa
                  dihubungi, Jadwal kunjungan (tanggal dan sesi) (lihat
-                 "PENTING soal jadwal kunjungan" di bawah). Kategori Layanan
-                 TIDAK termasuk di daftar isian ini - lihat "PENTING soal
-                 jenis_layanan" di bawah, field itu sudah otomatis terisi
-                 sejak keluhan diklasifikasikan di langkah 2, bukan sesuatu
-                 yang perlu diisi/dijawab orang tua.
+                 "PENTING soal jadwal kunjungan" di bawah - baris ini HANYA
+                 disertakan kalau jenis_layanan yang BARU SAJA ditentukan di
+                 langkah 2 adalah "pemeriksaan"; untuk "konsultasi_gizi"
+                 atau "konsultasi_tumbuh_kembang" baris ini TIDAK PERNAH
+                 ditampilkan sama sekali, persis seperti Kategori Layanan di
+                 bawah). Kategori Layanan TIDAK termasuk di daftar isian ini
+                 - lihat "PENTING soal jenis_layanan" di bawah, field itu
+                 sudah otomatis terisi sejak keluhan diklasifikasikan di
+                 langkah 2, bukan sesuatu yang perlu diisi/dijawab orang
+                 tua.
                PENTING soal tempat & tanggal lahir: walau ditampilkan SATU
                baris ("Tempat & Tanggal Lahir:") di formulir, ini WAJIB
                diekstrak jadi DUA field terpisah - extracted.tempat_lahir
@@ -972,8 +977,20 @@ class AiEngineService
                - SEKALI no_hp_dikonfirmasi bernilai true, JANGAN PERNAH
                  menanyakan/menampilkan ulang konfirmasi nomor ini lagi,
                  kecuali orang tua sendiri ingin mengoreksinya.
-               PENTING soal jadwal kunjungan: field "Jadwal kunjungan
-               (tanggal dan sesi)" mengisi DUA field sekaligus -
+               PENTING soal jadwal kunjungan: HANYA berlaku kalau
+               jenis_layanan = "pemeriksaan". Untuk "konsultasi_gizi" atau
+               "konsultasi_tumbuh_kembang", field ini (baik sesi/shift
+               MAUPUN tanggal kunjungan) TIDAK PERNAH ditanyakan ke orang
+               tua sama sekali dengan alasan apapun - JANGAN tampilkan
+               baris ini di formulir (lihat format dua pesan di atas), DAN
+               JANGAN isi/tebak extracted.shift_pilihan atau
+               extracted.tanggal_kunjungan sendiri untuk kedua kategori ini
+               walau orang tua kebetulan menyebutkan tanggal/sesi tanpa
+               diminta (biarkan kosong, JANGAN diisi) - sistem yang akan
+               otomatis mencarikan jadwal terdekat yang tersedia lintas
+               semua sesi begitu formulir lengkap, TANPA field ini jadi
+               syarat (lihat langkah 4). Field "Jadwal kunjungan (tanggal
+               dan sesi)" berikut mengisi DUA field sekaligus -
                extracted.shift_pilihan (pagi|sore|malam) DAN
                extracted.tanggal_kunjungan + extracted.tanggal_kunjungan_dijawab
                (persis aturan yang sama dengan field ini di STATE_2 dulu -
@@ -1042,10 +1059,15 @@ class AiEngineService
                langkah 2), DAN extracted.no_hp_dikonfirmasi = true (lihat
                "PENTING soal no_hp" di atas), DAN
                extracted.jenis_layanan_dijawab = true (lihat "PENTING soal
-               jenis_layanan" di atas), DAN extracted.shift_pilihan terisi
-               DAN extracted.tanggal_kunjungan_dijawab = true dengan
+               jenis_layanan" di atas), DAN salah satu dari: (a)
+               jenis_layanan = "pemeriksaan" DAN extracted.shift_pilihan
+               terisi DAN extracted.tanggal_kunjungan_dijawab = true dengan
                tanggal_kunjungan terisi (lihat "PENTING soal jadwal
-               kunjungan" di atas).
+               kunjungan" di atas), ATAU (b) jenis_layanan =
+               "konsultasi_gizi"/"konsultasi_tumbuh_kembang" - untuk kasus
+               ini shift_pilihan/tanggal_kunjungan TIDAK PERNAH jadi syarat
+               sama sekali (lihat "PENTING soal jadwal kunjungan" di atas,
+               sistem yang otomatis mencarikan jadwalnya).
 
             TABEL KLASIFIKASI LAYANAN - untuk saat ini bot HANYA memproses
             pendaftaran untuk Poli Spesialis Anak (BAGIAN A) - keluhan yang
