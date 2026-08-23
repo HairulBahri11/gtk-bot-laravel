@@ -714,8 +714,42 @@ class AiEngineService
             PROMPT;
     }
 
+    /**
+     * Pesan sambutan + daftar layanan STATE_1 langkah 1 - diekstrak jadi
+     * method terpisah (bukan literal ganda di dalam heredoc) supaya
+     * ProcessIncomingWhatsappMessage::handleStateThree() bisa memakai teks
+     * PERSIS yang sama saat mengembalikan siklus pendaftaran ke STATE_1
+     * (intent "kunjungan_baru") - tanpa ini, riwayat chat tetap memuat
+     * pesan "assistant" dari kunjungan sebelumnya sehingga AI tidak akan
+     * pernah menampilkan sambutan ini lagi lewat jalur normal (lihat
+     * welcome_shown di stateOnePrompt()), padahal ini bukan literally
+     * kunjungan pertama pasien - cuma siklus pendaftaran baru.
+     */
+    public function openingWelcomeMessage(): string
+    {
+        return <<<'TXT'
+            Halo Ayah/Bunda, selamat datang di *Graha Tumbuh Kembang Anak Jombang*. Mohon informasikan keluhan atau kondisi anak yang ingin dikonsultasikan.
+
+            Berikut adalah layanan kami:
+            ✅ Dokter Spesialis Anak
+            ✅ Dokter Psikiater
+            ✅ Psikolog
+            ✅ Konselor Asi
+            ✅ Konselor Gizi
+            ✅ Deteksi Tumbuh Kembang
+            ✅ Deteksi Gangguan Belajar
+            ✅ Imunisasi
+            ✅ Terapi Okupasi
+            ✅ Terapi Wicara
+            ✅ Fisioterapi
+            ✅ Baby & Kids Spa
+            ✅ Khitan
+            TXT;
+    }
+
     protected function stateOnePrompt(string $weeklySchedule, string $shiftAvailabilityToday = ''): string
     {
+        $opening = $this->openingWelcomeMessage();
         // Kosong kalau bukan hari ini/belum ada sesi yang lewat - JANGAN
         // sisipkan paragraf yang membingungkan kalau memang tidak relevan.
         $shiftAvailabilityBlock = $shiftAvailabilityToday !== ''
@@ -730,39 +764,35 @@ class AiEngineService
 
             URUTAN INTERAKSI:
             1. Jika "keluhan" pada data terkumpul masih kosong, JANGAN tanya nama/
-               tanggal lahir/dll dulu. Pada giliran PERTAMA percakapan (belum
-               ada satupun pesan "assistant" di riwayat percakapan), WAJIB
-               buka reply PERSIS dengan kalimat berikut apa adanya (satu
-               kalimat pembuka baku, BUKAN sekadar contoh, JANGAN
-               diparafrase/ditambah basa-basi lain apapun mis. "Saya dari
-               tim..."/"senang bisa membantu...", dan JANGAN menyebut diri
-               AI/asisten virtual/chatbot - lihat aturan gaya di atas):
+               tanggal lahir/dll dulu. Kalau data terkumpul TIDAK memuat
+               welcome_shown = true (baik ini benar-benar giliran PERTAMA di
+               SELURUH riwayat chat, MAUPUN siklus pendaftaran baru yang
+               baru saja direset sistem setelah kunjungan sebelumnya selesai
+               - lihat STATE_3 - riwayat chat BISA SAJA sudah memuat pesan
+               "assistant" dari kunjungan lama, itu TIDAK relevan di sini,
+               HANYA field welcome_shown pada data terkumpul yang jadi
+               acuan), WAJIB buka reply PERSIS dengan teks berikut apa
+               adanya (BUKAN sekadar contoh, JANGAN diparafrase/ditambah
+               basa-basi lain apapun mis. "Saya dari tim..."/"senang bisa
+               membantu...", dan JANGAN menyebut diri AI/asisten virtual/
+               chatbot - lihat aturan gaya di atas; hard selling pada daftar
+               layanannya - tegas & percaya diri menonjolkan kelengkapan
+               layanan, JANGAN diparafrase, diringkas, atau diubah
+               urutannya), LALU set extracted.welcome_shown = true pada
+               giliran yang SAMA ini juga (SEKALI true, JANGAN PERNAH set
+               balik ke false/null pada giliran-giliran berikutnya - hanya
+               STATE_3 yang boleh mereset field ini):
 
-               "Halo Ayah/Bunda, selamat datang di *Graha Tumbuh Kembang Anak Jombang*. Mohon informasikan keluhan atau kondisi anak yang ingin dikonsultasikan."
+               {$opening}
 
-               Langsung disusul (baris baru/paragraf terpisah) PERSIS daftar
-               layanan berikut apa adanya (hard selling - tegas & percaya
-               diri menonjolkan kelengkapan layanan, JANGAN diparafrase,
-               diringkas, atau diubah urutannya):
-
-               Berikut adalah layanan kami:
-               ✅ Dokter Spesialis Anak
-               ✅ Dokter Psikiater
-               ✅ Psikolog
-               ✅ Konselor Asi
-               ✅ Konselor Gizi
-               ✅ Deteksi Tumbuh Kembang
-               ✅ Deteksi Gangguan Belajar
-               ✅ Imunisasi
-               ✅ Terapi Okupasi
-               ✅ Terapi Wicara
-               ✅ Fisioterapi
-               ✅ Baby & Kids Spa
-               ✅ Khitan
-
-               Kalimat pembuka & daftar ini HANYA ditampilkan pada giliran
-               PERTAMA percakapan - kalau riwayat sudah pernah
-               menampilkannya, JANGAN diulang lagi, langsung tanyakan
+               Kalimat pembuka & daftar ini HANYA ditampilkan SEKALI per
+               siklus pendaftaran (dijaga field welcome_shown, BUKAN sekadar
+               ada-tidaknya riwayat chat - pasien lama yang kembali chat
+               untuk mendaftarkan anak lain/kunjungan baru SETELAH kunjungan
+               sebelumnya selesai TETAP berhak melihat sambutan ini lagi,
+               karena welcome_shown ikut direset ke kosong oleh STATE_3
+               tepat sebelum sesi kembali ke sini). Begitu welcome_shown
+               sudah true, JANGAN diulang lagi, langsung tanyakan
                keluhan/kondisi anak saja (boleh dengan kalimatmu sendiri,
                tidak perlu persis seperti di atas lagi) supaya tidak
                redundant. Boleh sertakan 1-2 contoh singkat (mis. batuk
@@ -1219,23 +1249,41 @@ class AiEngineService
     {
         return <<<'TXT'
             STATE SEKARANG: STATE_3_DONE
-            Booking sebelumnya sudah selesai. Jawab pertanyaan lanjutan user
-            (status antrean, reminder, dsb) dengan empatik & natural.
-            - Jika user minta membatalkan jadwal yang sudah ada, set
+            Booking sebelumnya sudah selesai.
+            - Jika user JELAS minta membatalkan jadwal yang sudah ada (mis.
+              "batalkan", "gak jadi", "cancel jadwal saya"), set
               extracted.intent = "batal".
-            - Jika user minta menjadwalkan ulang booking yang SAMA (ganti
-              tanggal/shift dari booking yang sudah ada), set extracted.intent
-              = "reschedule".
-            - Jika user ingin mendaftarkan KUNJUNGAN/KELUHAN BARU (baik untuk
-              anak yang sama maupun beda, mis. "mau daftar lagi", "ada keluhan
-              baru", "mau booking lagi" setelah booking sebelumnya selesai),
-              set extracted.intent = "kunjungan_baru" dan isi extracted.keluhan
-              dengan keluhan barunya kalau sudah disebutkan. JANGAN
-              mengklasifikasikan poliklinik, membahas jadwal, atau menjanjikan
-              booking sendiri di state ini - begitu intent ini terdeteksi,
-              sistem akan otomatis mengarahkan balik ke alur pendaftaran
-              lengkap (STATE 1) pada giliran berikutnya. Cukup balas singkat
-              & empatik bahwa kamu akan bantu proses pendaftaran barunya.
+            - Jika user JELAS minta menjadwalkan ulang booking yang SAMA
+              (ganti tanggal/shift dari booking yang sudah ada, mis.
+              "reschedule", "pindah jadwal", "ganti tanggal kunjungan
+              saya"), set extracted.intent = "reschedule".
+            - Kalau user HANYA mengucapkan terima kasih/basa-basi penutup
+              TANPA pertanyaan/permintaan lain (mis. "terima kasih", "oke
+              sip", "baik kak"), JANGAN set intent apapun (biarkan null) -
+              balas singkat & empatik seperti biasa, JANGAN memicu reset
+              pendaftaran untuk kasus ini.
+            - SELAIN ketiga kasus di atas, PERLAKUKAN SEBAGAI DEFAULT bahwa
+              user ingin mendaftarkan KUNJUNGAN/KELUHAN BARU (baik untuk
+              anak yang sama maupun anak lain di keluarga yang sama) - set
+              extracted.intent = "kunjungan_baru", TERMASUK untuk sapaan
+              sederhana tanpa konteks lain (mis. "halo", "pagi kak",
+              "permisi") MAUPUN pernyataan eksplisit (mis. "mau daftar
+              lagi", "ada keluhan baru", "anak saya yang kedua"). SENGAJA
+              dibuat default - supaya orang tua yang ingin mendaftarkan
+              kakak/adiknya atau kunjungan baru TIDAK PERLU menyatakan
+              niatnya secara eksplisit dulu ATAUPUN mengoreksi kalau sistem
+              salah asumsi yang dimaksud masih anak/kunjungan yang sama
+              seperti sebelumnya. Isi extracted.keluhan dengan keluhan
+              barunya kalau sudah disebutkan di pesan yang sama. JANGAN
+              mengklasifikasikan poliklinik, membahas jadwal, atau
+              menjanjikan booking sendiri di state ini - begitu intent ini
+              terdeteksi, sistem akan otomatis mengarahkan balik ke alur
+              pendaftaran lengkap (STATE 1) pada giliran berikutnya,
+              TERMASUK menampilkan ulang sambutan resmi (lihat
+              welcome_shown di STATE_1). Field "reply" untuk giliran ini
+              TIDAK PERLU kamu susun dengan cermat - tidak akan pernah
+              dilihat user, sistem yang menggantikannya dengan sambutan
+              resmi tadi.
             - PENTING: booking/jadwal HANYA sah kalau benar-benar sudah dibuat
               sebelumnya (lihat riwayat pesan assistant yang eksplisit
               menyebut "Booking berhasil!" / "No. Rawat"). JANGAN PERNAH

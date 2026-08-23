@@ -13,6 +13,7 @@ use App\Models\Patient;
 use App\Models\Poliklinik;
 use App\Models\QuotaShift;
 use App\Models\WhatsappMessage;
+use App\Services\Ai\AiEngineService;
 use App\Services\Whatsapp\WhatsAppServiceInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -888,6 +889,76 @@ class WhatsappWebhookTest extends TestCase
         $this->assertSame(BookingStatus::Booked, $booking->status);
         $this->assertSame(Shift::Pagi, $booking->shift);
         $this->assertSame(now()->toDateString(), $booking->tanggal_periksa->toDateString());
+    }
+
+    /**
+     * Setelah booking sebelumnya selesai (STATE_3_DONE), begitu intent
+     * "kunjungan_baru" terdeteksi (lihat AiEngineService::stateThreePrompt() -
+     * kini default untuk sapaan/permintaan apapun selain batal/reschedule
+     * eksplisit), sesi WAJIB langsung menampilkan ulang sambutan resmi
+     * STATE_1 (bukan cuma balasan singkat "akan kami bantu proses..." yang
+     * masih menyisakan giliran ekstra) DAN membersihkan identitas pasien
+     * lama dari context - satu nomor WA bisa dipakai untuk beberapa anak
+     * sekaligus (kakak-adik), jadi data anak SEBELUMNYA tidak boleh
+     * menempel ke pendaftaran baru ini.
+     */
+    public function test_state_three_kunjungan_baru_resets_to_fresh_welcome(): void
+    {
+        $session = ChatSession::create([
+            'chat_id' => $this->chatId,
+            'state' => ChatState::Done->value,
+            'no_rm' => '000050',
+            'context' => [
+                'nama' => 'Fiera testingbridging',
+                'tanggal_lahir' => '2020-01-01',
+                'tempat_lahir' => 'Jombang',
+                'nama_ibu_kandung' => 'Sari',
+                'jenis_kelamin' => 'PEREMPUAN',
+                'no_hp' => '6281234567890',
+                'no_hp_dikonfirmasi' => true,
+                'keluhan' => 'Batuk pilek',
+                'poli_pilihan' => 'Poli Spesialis Anak',
+                'poli_disetujui' => true,
+                'jenis_layanan' => 'pemeriksaan',
+                'jenis_layanan_dijawab' => true,
+                'shift_pilihan' => 'pagi',
+                'tanggal_kunjungan' => '2026-08-20',
+                'tanggal_kunjungan_dijawab' => true,
+                'welcome_shown' => true,
+            ],
+        ]);
+
+        $fakeWa = new FakeWhatsAppService;
+        $this->app->instance(WhatsAppServiceInterface::class, $fakeWa);
+
+        Http::fake([
+            'openrouter.ai/*' => Http::response($this->openRouterResponse(json_encode([
+                'reply' => 'placeholder - tidak akan pernah dipakai',
+                'extracted' => ['intent' => 'kunjungan_baru'],
+                'ready_for_next_state' => false,
+            ])), 200),
+        ]);
+
+        $this->postJson('/api/whatsapp/webhook', [
+            'event' => 'message',
+            'payload' => [
+                'from' => $this->chatId,
+                'fromMe' => false,
+                'body' => 'Halo',
+            ],
+        ])->assertOk();
+
+        $session->refresh();
+        $this->assertSame(ChatState::PengumpulanData, $session->state);
+        $this->assertSame(app(AiEngineService::class)->openingWelcomeMessage(), $fakeWa->sent[0]['message']);
+
+        foreach (['nama', 'tanggal_lahir', 'tempat_lahir', 'nama_ibu_kandung', 'jenis_kelamin', 'no_hp',
+            'no_hp_dikonfirmasi', 'keluhan', 'poli_pilihan', 'poli_disetujui', 'jenis_layanan',
+            'jenis_layanan_dijawab', 'shift_pilihan', 'tanggal_kunjungan', 'tanggal_kunjungan_dijawab'] as $key) {
+            $this->assertArrayNotHasKey($key, $session->context, "context[{$key}] harusnya sudah direset");
+        }
+
+        $this->assertTrue($session->context['welcome_shown']);
     }
 
     protected function seedMasterData(): void

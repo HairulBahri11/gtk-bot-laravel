@@ -157,7 +157,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             $reply = match ($session->state) {
                 ChatState::PengumpulanData => $this->handleStateOne($session, $result, $gtk, $matcher, $antrean, $quota),
                 ChatState::Konfirmasi => $this->handleStateTwo($session, $result, $antrean, $quota),
-                ChatState::Done => $this->handleStateThree($session, $result, $antrean),
+                ChatState::Done => $this->handleStateThree($session, $result, $antrean, $ai),
             };
         } catch (GtkApiException $e) {
             $this->handleSystemError($wa, $session, 'GTK API', $e->getMessage());
@@ -589,7 +589,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
      * berikutnya membalikkannya ke false/null (lihat catatan di
      * handleStateOne() untuk masing-masing flag).
      */
-    protected const STICKY_TRUE_KEYS = ['poli_disetujui', 'no_hp_dikonfirmasi', 'tanggal_kunjungan_dijawab', 'jenis_layanan_dijawab'];
+    protected const STICKY_TRUE_KEYS = ['poli_disetujui', 'no_hp_dikonfirmasi', 'tanggal_kunjungan_dijawab', 'jenis_layanan_dijawab', 'welcome_shown'];
 
     /**
      * Field context yang benar-benar dibaca kode kita - HARUS sinkron persis
@@ -609,6 +609,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
         'no_hp_dikonfirmasi', 'keluhan', 'poli_pilihan', 'poli_disetujui',
         'jenis_layanan', 'jenis_layanan_dijawab',
         'shift_pilihan', 'tanggal_kunjungan', 'tanggal_kunjungan_dijawab', 'dokter_pilihan',
+        'welcome_shown',
     ];
 
     /**
@@ -1963,7 +1964,7 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
      * STATE_3_DONE - respon lanjutan (§6.A PRD), termasuk pembatalan
      * inisiatif pasien lewat chat.
      */
-    protected function handleStateThree(ChatSession $session, array $result, AntreanService $antrean): string
+    protected function handleStateThree(ChatSession $session, array $result, AntreanService $antrean, AiEngineService $ai): string
     {
         $intent = $result['extracted']['intent'] ?? null;
 
@@ -2014,6 +2015,25 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
             // dari kunjungan SEBELUMNYA bisa salah tempel ke anak yang berbeda.
             // STATE_1 WAJIB menanyakan ulang identitas dari nol setiap kali masuk
             // sini, persis seperti sesi benar-benar baru.
+            // welcome_shown ikut direset di sini juga (walau STICKY_TRUE_KEYS)
+            // supaya sambutan resmi STATE_1 langkah 1 (lihat AiEngineService::
+            // stateOnePrompt()) tampil LAGI untuk siklus pendaftaran baru ini -
+            // riwayat chat tetap memuat pesan "assistant" dari kunjungan
+            // sebelumnya, tapi itu bukan alasan melewatkan sambutan resmi
+            // untuk kunjungan/anak yang BARU. Dibalas LANGSUNG di sini (bukan
+            // menunggu giliran AI berikutnya) supaya orang tua tidak perlu
+            // mengetik apapun lagi sebelum melihat sambutan+daftar layanan -
+            // satu kali "halo"/"mau daftar lagi" langsung menampilkan
+            // persis pengalaman kunjungan pertama, siap diisi keluhan anak
+            // berikutnya.
+            // extracted.keluhan giliran ini SENGAJA diabaikan (tidak
+            // dibawa masuk ke context baru) walau AI mungkin menangkapnya
+            // (mis. "mau daftar lagi, batuk pilek" dalam satu pesan) -
+            // balasan turn ini SELALU sambutan resmi yang tetap menanyakan
+            // keluhan (lihat openingWelcomeMessage()), jadi membawa masuk
+            // keluhan lama di sini hanya akan bikin pertanyaan itu terasa
+            // janggal (menanyakan sesuatu yang sebenarnya sudah dijawab).
+            // Orang tua tinggal jawab ulang keluhannya di giliran berikutnya.
             unset(
                 $context['poli_pilihan'], $context['poli_disetujui'],
                 $context['shift_pilihan'], $context['dokter_pilihan'],
@@ -2022,12 +2042,15 @@ class ProcessIncomingWhatsappMessage implements ShouldQueue
                 $context['nama'], $context['tanggal_lahir'], $context['tempat_lahir'],
                 $context['nama_ibu_kandung'], $context['jenis_kelamin'],
                 $context['no_hp'], $context['no_hp_dikonfirmasi'],
+                $context['keluhan'], $context['welcome_shown'],
             );
+
+            $context['welcome_shown'] = true;
             $session->context = $context;
             $session->state = ChatState::PengumpulanData->value;
             $session->step = null;
 
-            return 'Baik, akan kami bantu proses pendaftaran kunjungan baru. Mohon informasikan keluhan atau kondisi anak yang ingin dikonsultasikan.';
+            return $ai->openingWelcomeMessage();
         }
 
         return $result['reply'];
