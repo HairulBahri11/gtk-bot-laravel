@@ -178,10 +178,18 @@ class QuotaService
      * pasien konsultasi, begitu pula sebaliknya) untuk dokter yang sama,
      * dipakai saat kuota penuh (§3.2 PRD).
      *
-     * Prefetch beberapa kali lipat $limit lalu difilter di PHP via
+     * Ambil SEMUA baris dokter ini dari $tanggal ke depan (dibatasi wajar
+     * oleh jendela quota:rebuild-shifts, ~60 hari x maksimal 3 shift/hari =
+     * ~180 baris per dokter - bukan skala besar), baru difilter di PHP via
      * tersisaFor() (bukan whereColumn ke kolom turunan) - kuota_pemeriksaan/
      * kuota_tersisa_per-kategori bukan kolom asli, jadi tidak bisa
-     * dibandingkan langsung lewat query builder.
+     * dibandingkan langsung lewat query builder. SENGAJA TIDAK di-limit()
+     * di level SQL sebelum difilter (kejadian nyata: limit($limit*5) lama
+     * memotong hasil SEBELUM filter ketersediaan sempat jalan - kalau
+     * belasan/puluhan baris pertama sama-sama penuh/nol kuota berturut-
+     * turut, baris yang sebenarnya tersedia jauh lebih jauh tidak pernah
+     * ikut terambil sama sekali, sehingga alternatif nyata yang ada malah
+     * dilaporkan "tidak ada").
      *
      * @return array<int, array{tanggal: string, shift: string}>
      */
@@ -192,7 +200,6 @@ class QuotaService
             ->whereDate('tanggal', '>=', $tanggal)
             ->orderBy('tanggal')
             ->orderByRaw("CASE shift WHEN 'pagi' THEN 1 WHEN 'sore' THEN 2 WHEN 'malam' THEN 3 ELSE 4 END")
-            ->limit($limit * 5)
             ->get()
             ->filter(fn (QuotaShift $q) => $q->status !== 'cancelled' && $q->tersisaFor($jenis) > 0)
             ->take($limit)

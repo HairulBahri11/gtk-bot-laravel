@@ -326,4 +326,62 @@ class JenisLayananQuotaTest extends TestCase
         $this->assertGreaterThan(2, $quota->kuota_total);
         $this->assertSame(1, $quota->kuota_konsultasi_tumbuh_kembang);
     }
+
+    /**
+     * Kejadian nyata (bug): QuotaService::suggestAlternatives() dulu
+     * memakai limit($limit * 5) di level SQL SEBELUM baris difilter
+     * ketersediaan riil di PHP (tersisaFor()) - kalau belasan/puluhan
+     * baris pertama (terurut by tanggal) sama-sama tanpa kuota kategori
+     * ini secara berturut-turut, baris yang sebenarnya tersedia jauh
+     * lebih jauh tidak pernah ikut terambil sama sekali, sehingga
+     * alternatif nyata yang ada malah dilaporkan "tidak ada" ke pasien
+     * (waitlist tanpa tawaran, "kapan tersedia" jatuh ke AI yang
+     * mengarahkan ke admin). Reproduksi persis: 20 hari berturut-turut
+     * TANPA kuota Konsultasi Gizi (lebih banyak dari limit lama, 3*5=15),
+     * baru hari ke-21 yang benar-benar tersedia.
+     */
+    public function test_suggest_alternatives_finds_slot_beyond_many_consecutive_full_rows(): void
+    {
+        $this->makeSchedule('pagi');
+
+        $start = Carbon::parse($this->tanggal);
+
+        for ($i = 0; $i < 20; $i++) {
+            QuotaShift::create([
+                'kode_dokter' => $this->kodeDokter,
+                'kode_poliklinik' => $this->kodePoliklinik,
+                'tanggal' => $start->copy()->addDays($i)->toDateString(),
+                'shift' => 'pagi',
+                'kuota_total' => 5,
+                'kuota_terpakai' => 0,
+                'kuota_konsultasi_gizi' => 0,
+                'kuota_terpakai_konsultasi_gizi' => 0,
+                'kuota_konsultasi_tumbuh_kembang' => 0,
+                'kuota_terpakai_konsultasi_tumbuh_kembang' => 0,
+                'status' => 'open',
+            ]);
+        }
+
+        $availableDate = $start->copy()->addDays(20)->toDateString();
+
+        QuotaShift::create([
+            'kode_dokter' => $this->kodeDokter,
+            'kode_poliklinik' => $this->kodePoliklinik,
+            'tanggal' => $availableDate,
+            'shift' => 'pagi',
+            'kuota_total' => 5,
+            'kuota_terpakai' => 0,
+            'kuota_konsultasi_gizi' => 2,
+            'kuota_terpakai_konsultasi_gizi' => 0,
+            'kuota_konsultasi_tumbuh_kembang' => 0,
+            'kuota_terpakai_konsultasi_tumbuh_kembang' => 0,
+            'status' => 'open',
+        ]);
+
+        $alternatives = app(QuotaService::class)->suggestAlternatives($this->kodeDokter, $this->tanggal, JenisLayanan::KonsultasiGizi);
+
+        $this->assertNotEmpty($alternatives);
+        $this->assertSame($availableDate, $alternatives[0]['tanggal']);
+        $this->assertSame('pagi', $alternatives[0]['shift']);
+    }
 }
